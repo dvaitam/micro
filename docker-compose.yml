@@ -1,0 +1,94 @@
+version: "3.9"
+
+services:
+
+  registration-api:
+    build: ./registration-api
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_URL: 192.168.68.103:9092
+      MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+      MESSAGE_SERVICE_URL: http://message-service:8084
+    depends_on:
+      mysql:
+        condition: service_healthy
+      message-service:
+        condition: service_started
+
+  email-worker:
+    build: ./email-worker
+    environment:
+      KAFKA_URL: 192.168.68.103:9092
+      MAILGUN_DOMAIN: manchik.co.uk
+      MAILGUN_API_KEY: 
+      MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  chat-service:
+    build: ./chat-service
+    ports:
+      - "8083:8083"
+    environment:
+      MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+      REDIS_ADDR: redis:6379
+      MESSAGE_SERVICE_URL: http://message-service:8084
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      message-service:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: micro_auth
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_START_RPC: "true"
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' 127.0.0.1 9042"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  message-service:
+    build: ./message-service
+    environment:
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: chat_data
+      SERVICE_PORT: "8084"
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    ports:
+      - "8084:8084"
+
+volumes:
+  mysql-data:
+  cassandra-data:
