@@ -571,6 +571,11 @@ type session struct {
 	ExpiresAt time.Time
 }
 
+type deviceTokenPayload struct {
+	DeviceToken string `json:"device_token"`
+	Platform    string `json:"platform,omitempty"`
+}
+
 func main() {
 	kafkaURL := os.Getenv("KAFKA_URL")
 	mysqlDSN := os.Getenv("MYSQL_DSN")
@@ -619,6 +624,8 @@ func main() {
 	mux.HandleFunc("/chat", handleChat)
 	mux.HandleFunc("/api/conversations", handleAPIConversations)
 	mux.HandleFunc("/api/conversations/", handleAPIConversationResource)
+	mux.HandleFunc("/api/device", handleRegisterDevice)
+	mux.HandleFunc("/api/device/associate", handleAssociateDevice)
 
 	fmt.Println("Registration API running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -650,7 +657,123 @@ func ensureSchema() error {
 		return err
 	}
 
+	createDeviceTokens := `
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            device_token VARCHAR(255) NOT NULL PRIMARY KEY,
+            platform VARCHAR(32) DEFAULT NULL,
+            user_email VARCHAR(255) DEFAULT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            INDEX idx_device_user_email (user_email)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `
+	if _, err := db.Exec(createDeviceTokens); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+	var payload deviceTokenPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+		return
+	}
+
+	token := strings.TrimSpace(payload.DeviceToken)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_token is required"})
+		return
+	}
+
+	platform := strings.ToLower(strings.TrimSpace(payload.Platform))
+	now := time.Now()
+
+	_, err := db.Exec(
+		`INSERT INTO device_tokens (device_token, platform, created_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE platform = VALUES(platform), updated_at = VALUES(updated_at)`,
+		token, platform, now, now,
+	)
+	if err != nil {
+		log.Printf("register device token error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to register device"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func handleAssociateDevice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sess, err := getSessionFromRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	defer r.Body.Close()
+	var payload deviceTokenPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+		return
+	}
+
+	token := strings.TrimSpace(payload.DeviceToken)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_token is required"})
+		return
+	}
+
+	now := time.Now()
+
+	res, err := db.Exec(
+		`UPDATE device_tokens
+         SET user_email = ?, updated_at = ?
+         WHERE device_token = ?`,
+		sess.Email, now, token,
+	)
+	if err != nil {
+		log.Printf("associate device token update error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to associate device"})
+		return
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		log.Printf("associate device token rows affected error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to associate device"})
+		return
+	}
+
+	if rows == 0 {
+		_, err = db.Exec(
+			`INSERT INTO device_tokens (device_token, user_email, created_at, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE user_email = VALUES(user_email), updated_at = VALUES(updated_at)`,
+			token, sess.Email, now, now,
+		)
+		if err != nil {
+			log.Printf("associate device token insert error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to associate device"})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -819,8 +942,13 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 
-	if len(parts) == 1 && r.Method == http.MethodGet {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		conversation, err := messageSvc.GetConversation(ctx, conversationID)
 		cancel()
@@ -841,7 +969,7 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet {
+	if len(parts) == 2 && parts[1] == "messages" {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		conversation, err := messageSvc.GetConversation(ctx, conversationID)
 		cancel()
@@ -859,19 +987,54 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
-		messages, err := messageSvc.ListMessages(ctx, conversationID)
-		cancel()
-		if err != nil {
-			log.Printf("list messages error: %v", err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to load messages"})
+		switch r.Method {
+		case http.MethodGet:
+			ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
+			messages, err := messageSvc.ListMessages(ctx, conversationID)
+			cancel()
+			if err != nil {
+				log.Printf("list messages error: %v", err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to load messages"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"conversation_id": conversationID,
+				"messages":        messages,
+			})
+			return
+
+		case http.MethodPost:
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			defer r.Body.Close()
+
+			text := strings.TrimSpace(payload.Text)
+			if text == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+				return
+			}
+
+			ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
+			msg, err := messageSvc.CreateMessage(ctx, conversationID, sess.Email, text)
+			cancel()
+			if err != nil {
+				log.Printf("create message error: %v", err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to send message"})
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+			return
+
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"conversation_id": conversationID,
-			"messages":        messages,
-		})
-		return
 	}
 
 	w.WriteHeader(http.StatusNotFound)
@@ -979,6 +1142,16 @@ type messageView struct {
 	Sender string `json:"sender"`
 	Text   string `json:"text"`
 	SentAt string `json:"sent_at"`
+}
+
+type createdMessage struct {
+	ID             string   `json:"id"`
+	ConversationID string   `json:"conversation_id"`
+	Sender         string   `json:"sender"`
+	Text           string   `json:"text"`
+	SentAt         string   `json:"sent_at"`
+	Participants   []string `json:"participants,omitempty"`
+	Name           string   `json:"conversation_name,omitempty"`
 }
 
 var errNotFound = errors.New("not found")
@@ -1100,6 +1273,39 @@ func (m *messageServiceClient) ListMessages(ctx context.Context, id string) ([]m
 		return nil, err
 	}
 	return payload.Messages, nil
+}
+
+func (m *messageServiceClient) CreateMessage(ctx context.Context, conversationID, sender, text string) (*createdMessage, error) {
+	body := map[string]string{
+		"sender": sender,
+		"text":   text,
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, conversationID), bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, decodeMessageServiceError(resp)
+	}
+
+	var msg createdMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
 }
 
 type conversationSummary struct {
