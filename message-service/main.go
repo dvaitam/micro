@@ -210,7 +210,7 @@ func (s *server) listConversations(w http.ResponseWriter, r *http.Request) {
 	var (
 		id           gocql.UUID
 		name         string
-		participants map[string]struct{}
+		participants []string
 		lastActivity time.Time
 	)
 
@@ -220,7 +220,7 @@ func (s *server) listConversations(w http.ResponseWriter, r *http.Request) {
 		conversations = append(conversations, conversation{
 			ID:             id,
 			Name:           name,
-			Participants:   setToSlice(participants),
+			Participants:   copyAndSort(participants),
 			LastActivityAt: lastActivity,
 		})
 	}
@@ -315,7 +315,7 @@ func (s *server) createConversation(w http.ResponseWriter, r *http.Request) {
 func (s *server) getConversation(w http.ResponseWriter, r *http.Request, id gocql.UUID) {
 	var (
 		name         string
-		participants map[string]struct{}
+		participants []string
 		createdAt    time.Time
 		createdBy    string
 		lastActivity time.Time
@@ -331,6 +331,7 @@ func (s *server) getConversation(w http.ResponseWriter, r *http.Request, id gocq
 		return
 	}
 	if err != nil {
+		log.Printf("get conversation %s error: %v", id, err)
 		http.Error(w, "unable to load conversation", http.StatusInternalServerError)
 		return
 	}
@@ -338,7 +339,7 @@ func (s *server) getConversation(w http.ResponseWriter, r *http.Request, id gocq
 	resp := map[string]interface{}{
 		"id":               id.String(),
 		"name":             name,
-		"participants":     setToSlice(participants),
+		"participants":     copyAndSort(participants),
 		"created_by":       createdBy,
 		"created_at":       createdAt.UTC().Format(time.RFC3339),
 		"last_activity_at": lastActivity.UTC().Format(time.RFC3339),
@@ -411,6 +412,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversat
 		if errors.Is(err, gocql.ErrNotFound) {
 			http.Error(w, "conversation not found", http.StatusNotFound)
 		} else {
+			log.Printf("create message load conversation %s error: %v", conversationID, err)
 			http.Error(w, "unable to load conversation", http.StatusInternalServerError)
 		}
 		return
@@ -427,6 +429,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversat
 		`INSERT INTO messages (conversation_id, sent_at, message_id, sender, body) VALUES (?, ?, ?, ?, ?)`,
 		conversationID, now, messageID, payload.Sender, payload.Text,
 	).Exec(); err != nil {
+		log.Printf("store message insert error for conversation %s: %v", conversationID, err)
 		http.Error(w, "unable to store message", http.StatusInternalServerError)
 		return
 	}
@@ -464,7 +467,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversat
 func (s *server) loadConversation(id gocql.UUID) (*conversation, error) {
 	var (
 		name         string
-		participants map[string]struct{}
+		participants []string
 		createdAt    time.Time
 		createdBy    string
 		lastActivity time.Time
@@ -475,26 +478,24 @@ func (s *server) loadConversation(id gocql.UUID) (*conversation, error) {
 		id,
 	).Consistency(gocql.Quorum).Scan(&name, &participants, &createdAt, &createdBy, &lastActivity)
 	if err != nil {
+		log.Printf("load conversation %s error: %v", id, err)
 		return nil, err
 	}
 
 	return &conversation{
 		ID:             id,
 		Name:           name,
-		Participants:   setToSlice(participants),
+		Participants:   copyAndSort(participants),
 		CreatedAt:      createdAt,
 		CreatedBy:      createdBy,
 		LastActivityAt: lastActivity,
 	}, nil
 }
 
-func setToSlice(set map[string]struct{}) []string {
-	result := make([]string, 0, len(set))
-	for v := range set {
-		result = append(result, v)
-	}
-	sort.Strings(result)
-	return result
+func copyAndSort(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
 }
 
 func uniqueNonEmpty(values []string) []string {

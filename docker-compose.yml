@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
 
   registration-api:
@@ -7,25 +5,29 @@ services:
     ports:
       - "8082:8080"
     environment:
-      KAFKA_URL: 192.168.68.103:9092
+      KAFKA_URL: kafka:9092
       MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
       MESSAGE_SERVICE_URL: http://message-service:8084
     depends_on:
       mysql:
         condition: service_healthy
+      kafka:
+        condition: service_started
       message-service:
         condition: service_started
 
   email-worker:
     build: ./email-worker
     environment:
-      KAFKA_URL: 192.168.68.103:9092
+      KAFKA_URL: kafka:9092
       MAILGUN_DOMAIN: manchik.co.uk
-      MAILGUN_API_KEY: 
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:?MAILGUN_API_KEY not set}
       MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
     depends_on:
       mysql:
         condition: service_healthy
+      kafka:
+        condition: service_started
 
   chat-service:
     build: ./chat-service
@@ -89,6 +91,38 @@ services:
     ports:
       - "8084:8084"
 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: "2181"
+      ZOOKEEPER_TICK_TIME: "2000"
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    environment:
+      KAFKA_BROKER_ID: "1"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    ports:
+      - "9092:9092"
+    depends_on:
+      zookeeper:
+        condition: service_started
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
 volumes:
   mysql-data:
   cassandra-data:
+  zookeeper-data:
+  kafka-data:

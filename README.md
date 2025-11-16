@@ -3,8 +3,7 @@
 This stack now provides OTP-based authentication and a WebSocket chat service on top of the existing Kafka-driven email worker.
 
 ### Prerequisites
-- MySQL running on the host with database `micro_auth` created and reachable from Docker (DSN defaults to `root:password@tcp(host.docker.internal:3306)/micro_auth?parseTime=true`).
-- Kafka cluster reachable at `192.168.68.103:9092`.
+- Docker and Docker Compose installed locally.
 - Mailgun credentials that can send email from the configured domain.
 
 ### Services
@@ -12,9 +11,12 @@ This stack now provides OTP-based authentication and a WebSocket chat service on
 - `email-worker`: consumes `new-registration` topic from Kafka, generates 6-digit OTPs, stores them in MySQL for 3 minutes, and emails the code via Mailgun.
 - `chat-service` (port `8083`): validates session tokens, upgrades clients to WebSockets, tracks online users, and fans out chat messages via Redis pub/sub.
 - `redis`: message broker for the chat service (port `6379` exposed for local inspection if needed).
+- `mysql`: stores auth/session data for the API, worker, and chat service (`3306` exposed for convenience).
+- `cassandra`: stores chat history for `message-service`.
+- `kafka` + `zookeeper`: run the `new-registration` topic used by the `email-worker`; `kafka:9092` is wired into the services by default.
 
 ### Running the stack
-1. Ensure the MySQL database exists and credentials match the DSN in `docker-compose.yml`.
+1. (Optional) Adjust DSNs, ports, or Mailgun settings in `docker-compose.yml`.
 2. Start the services:
    ```bash
    docker-compose up --build

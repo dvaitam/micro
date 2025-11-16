@@ -494,8 +494,10 @@ const chatTpl = `
     } else {
         renderUsers([]);
         fetchConversations();
-        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const wsURL = protocol + window.location.hostname + ':8083/ws?token=' + encodeURIComponent(token);
+        const isSecure = window.location.protocol === 'https:';
+        const protocol = isSecure ? 'wss://' : 'ws://';
+        const host = isSecure ? 'ws.manchik.co.uk' : (window.location.hostname + ':8083');
+        const wsURL = protocol + host + '/ws?token=' + encodeURIComponent(token);
         socket = new WebSocket(wsURL);
 
         socket.addEventListener('open', () => {
