@@ -85,11 +85,33 @@ services:
       CASSANDRA_HOSTS: cassandra
       CASSANDRA_KEYSPACE: chat_data
       SERVICE_PORT: "8084"
+      KAFKA_URL: kafka:9092
+      MESSAGE_EVENTS_TOPIC: chat-messages
     depends_on:
       cassandra:
         condition: service_healthy
     ports:
       - "8084:8084"
+
+  push-service:
+    build: ./push-service
+    environment:
+      KAFKA_URL: kafka:9092
+      KAFKA_TOPIC: chat-messages
+      KAFKA_CONSUMER_GROUP: push-service
+      MYSQL_DSN: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+      APNS_KEY_PATH: /secrets/AuthKey_3NBGA8639B.p8
+      APNS_KEY_ID: 3NBGA8639B
+      APNS_TEAM_ID: V35SKYR64Q
+      APNS_TOPIC: uk.co.manchik.iMessage
+      APNS_ENVIRONMENT: development
+    depends_on:
+      kafka:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    volumes:
+      - /home/ubuntu/AuthKey_3NBGA8639B.p8:/secrets/AuthKey_3NBGA8639B.p8:ro
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1

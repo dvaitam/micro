@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +14,12 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
+	"github.com/segmentio/kafka-go"
 )
 
 type server struct {
-	session *gocql.Session
+	session     *gocql.Session
+	kafkaWriter *kafka.Writer
 }
 
 type conversation struct {
@@ -34,6 +37,15 @@ type message struct {
 	Body      string
 	SentAt    time.Time
 	CreatedAt time.Time
+}
+
+type messageEvent struct {
+	ConversationID   string   `json:"conversation_id"`
+	ConversationName string   `json:"conversation_name"`
+	Sender           string   `json:"sender"`
+	Text             string   `json:"text"`
+	SentAt           string   `json:"sent_at"`
+	Participants     []string `json:"participants"`
 }
 
 func main() {
@@ -70,7 +82,21 @@ func main() {
 		log.Fatalf("unable to ensure schema: %v", err)
 	}
 
-	srv := &server{session: session}
+	kafkaURL := strings.TrimSpace(os.Getenv("KAFKA_URL"))
+	if kafkaURL == "" {
+		kafkaURL = "kafka:9092"
+	}
+	messageTopic := strings.TrimSpace(os.Getenv("MESSAGE_EVENTS_TOPIC"))
+	if messageTopic == "" {
+		messageTopic = "chat-messages"
+	}
+	kafkaWriter := newMessageWriter(kafkaURL, messageTopic)
+	defer kafkaWriter.Close()
+
+	srv := &server{
+		session:     session,
+		kafkaWriter: kafkaWriter,
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.handleHealth)
@@ -138,6 +164,14 @@ func ensureSchema(session *gocql.Session) error {
 		}
 	}
 	return nil
+}
+
+func newMessageWriter(broker, topic string) *kafka.Writer {
+	return kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{broker},
+		Topic:    topic,
+		Balancer: &kafka.LeastBytes{},
+	})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -461,6 +495,17 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversat
 		"participants":      conv.Participants,
 		"conversation_name": conv.Name,
 	}
+
+	event := &messageEvent{
+		ConversationID:   conversationID.String(),
+		ConversationName: conv.Name,
+		Sender:           payload.Sender,
+		Text:             payload.Text,
+		SentAt:           now.Format(time.RFC3339),
+		Participants:     conv.Participants,
+	}
+	s.publishMessageEvent(event)
+
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -490,6 +535,22 @@ func (s *server) loadConversation(id gocql.UUID) (*conversation, error) {
 		CreatedBy:      createdBy,
 		LastActivityAt: lastActivity,
 	}, nil
+}
+
+func (s *server) publishMessageEvent(event *messageEvent) {
+	if s.kafkaWriter == nil || event == nil {
+		return
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("kafka event marshal error: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.kafkaWriter.WriteMessages(ctx, kafka.Message{Value: data}); err != nil {
+		log.Printf("kafka write error: %v", err)
+	}
 }
 
 func copyAndSort(values []string) []string {
