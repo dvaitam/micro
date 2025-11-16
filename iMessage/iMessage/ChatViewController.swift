@@ -16,6 +16,8 @@ struct ChatMessage: Decodable {
 
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
+    static var activeConversationID: String?
+
     private let baseURL: URL
     private let urlSession: URLSession
     private let conversation: Conversation
@@ -46,6 +48,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         loadMessages()
         registerForKeyboardNotifications()
         NotificationCenter.default.addObserver(self, selector: #selector(handleIncomingMessage(_:)), name: .chatMessageReceived, object: nil)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        ChatViewController.activeConversationID = conversation.id
+        NotificationCenter.default.post(name: .chatConversationRead, object: nil, userInfo: ["conversationID": conversation.id])
+        ChatWebSocketManager.shared.connectIfNeeded()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if ChatViewController.activeConversationID == conversation.id {
+            ChatViewController.activeConversationID = nil
+        }
     }
 
     private func setupUI() {

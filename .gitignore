@@ -1,1 +1,26 @@
 .env
+ubuntu@manchik.co.uk
+
+# macOS
+.DS_Store
+
+# Xcode / iOS build artifacts
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Xcode user-specific settings
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/

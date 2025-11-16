@@ -1009,8 +1009,20 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 
 		switch r.Method {
 		case http.MethodGet:
+			limit := 0
+			if limitParam := strings.TrimSpace(r.URL.Query().Get("limit")); limitParam != "" {
+				if parsed, err := strconv.Atoi(limitParam); err == nil && parsed > 0 && parsed <= 1000 {
+					limit = parsed
+				}
+			}
+
 			ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
-			messages, err := messageSvc.ListMessages(ctx, conversationID)
+			var messages []messageView
+			if limit > 0 {
+				messages, err = messageSvc.ListMessagesWithLimit(ctx, conversationID, limit)
+			} else {
+				messages, err = messageSvc.ListMessages(ctx, conversationID)
+			}
 			cancel()
 			if err != nil {
 				log.Printf("list messages error: %v", err)
@@ -1273,6 +1285,34 @@ func (m *messageServiceClient) GetConversation(ctx context.Context, id string) (
 
 func (m *messageServiceClient) ListMessages(ctx context.Context, id string) ([]messageView, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, id), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeMessageServiceError(resp)
+	}
+
+	var payload struct {
+		Messages []messageView `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Messages, nil
+}
+
+func (m *messageServiceClient) ListMessagesWithLimit(ctx context.Context, id string, limit int) ([]messageView, error) {
+	url := fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, id)
+	if limit > 0 {
+		url = fmt.Sprintf("%s?limit=%d", url, limit)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}

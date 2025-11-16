@@ -5,6 +5,8 @@ struct Conversation: Decodable {
     let name: String
     let participants: [String]
     let lastActivityAt: String
+    var unreadCount: Int = 0
+    var lastMessagePreview: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -30,7 +32,6 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
 
         view.addSubview(tableView)
 
@@ -47,7 +48,14 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             ChatWebSocketManager.shared.connectIfNeeded()
         }
 
+        NotificationCenter.default.addObserver(self, selector: #selector(handleIncomingMessage(_:)), name: .chatMessageReceived, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleConversationRead(_:)), name: .chatConversationRead, object: nil)
+
         loadConversations()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func loadConversations() {
@@ -67,12 +75,55 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                     do {
                         let decoded = try JSONDecoder().decode(Response.self, from: data)
                         self.conversations = decoded.conversations
+                        self.loadLastMessagesForConversations()
                         self.tableView.reloadData()
                     } catch {
                         print("Failed to decode conversations: \(error)")
                     }
                 } else if let error = error {
                     print("Failed to load conversations: \(error)")
+                }
+            }
+        }.resume()
+    }
+
+    private func loadLastMessagesForConversations() {
+        for conversation in conversations {
+            loadLastMessage(for: conversation)
+        }
+    }
+
+    private func loadLastMessage(for conversation: Conversation) {
+        guard let url = URL(string: "/api/conversations/\(conversation.id)/messages?limit=1", relativeTo: baseURL) else {
+            return
+        }
+
+        let request = URLRequest(url: url)
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard let data = data else {
+                    if let error = error {
+                        print("Failed to load last message: \(error)")
+                    }
+                    return
+                }
+
+                struct Response: Decodable {
+                    let messages: [ChatMessage]
+                }
+
+                do {
+                    let decoded = try JSONDecoder().decode(Response.self, from: data)
+                    guard let last = decoded.messages.last else {
+                        return
+                    }
+                    if let index = self.conversations.firstIndex(where: { $0.id == conversation.id }) {
+                        self.conversations[index].lastMessagePreview = last.text
+                        self.tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
+                    }
+                } catch {
+                    print("Failed to decode last message: \(error)")
                 }
             }
         }.resume()
@@ -129,7 +180,8 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                            let name = conversationDict["name"] as? String,
                            let participants = conversationDict["participants"] as? [String],
                            let lastActivityAt = conversationDict["last_activity_at"] as? String {
-                            let conversation = Conversation(id: id, name: name, participants: participants, lastActivityAt: lastActivityAt)
+                            var conversation = Conversation(id: id, name: name, participants: participants, lastActivityAt: lastActivityAt)
+                            conversation.unreadCount = 0
                             self.conversations.insert(conversation, at: 0)
                             self.tableView.reloadData()
                             self.showConversation(conversation)
@@ -156,9 +208,25 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
+        let identifier = "Cell"
+        let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ??
+            UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
         let conversation = conversations[indexPath.row]
-        cell.textLabel?.text = conversation.name.isEmpty ? conversation.participants.joined(separator: ", ") : conversation.name
+        let title = conversation.name.isEmpty ? conversation.participants.joined(separator: ", ") : conversation.name
+        cell.textLabel?.text = title
+
+        if conversation.unreadCount > 0 {
+            if let preview = conversation.lastMessagePreview, !preview.isEmpty {
+                cell.detailTextLabel?.text = "\(preview)   • Unread: \(conversation.unreadCount)"
+            } else {
+                cell.detailTextLabel?.text = "Unread: \(conversation.unreadCount)"
+            }
+            cell.detailTextLabel?.textColor = .systemBlue
+            cell.accessoryType = .disclosureIndicator
+        } else {
+            cell.detailTextLabel?.text = conversation.lastMessagePreview
+            cell.accessoryType = .disclosureIndicator
+        }
         cell.accessoryType = .disclosureIndicator
         return cell
     }
@@ -168,6 +236,59 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let conversation = conversations[indexPath.row]
+        conversations[indexPath.row].unreadCount = 0
+        tableView.reloadRows(at: [indexPath], with: .none)
         showConversation(conversation)
+    }
+
+    @objc private func handleIncomingMessage(_ notification: Notification) {
+        guard let event = notification.userInfo?["event"] as? ChatSocketEvent else {
+            return
+        }
+        guard event.type == "message", let conversationID = event.conversationID else {
+            return
+        }
+
+        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+            var convo = conversations.remove(at: index)
+            if let sentAt = event.sentAt {
+                convo.lastActivityAt = sentAt
+            }
+
+            if let text = event.text {
+                convo.lastMessagePreview = text
+            }
+
+            if let activeID = ChatViewController.activeConversationID, activeID == conversationID {
+                // Conversation currently open; don't increment unread.
+            } else {
+                convo.unreadCount += 1
+            }
+
+            conversations.insert(convo, at: 0)
+        } else {
+            let name = event.conversationName ?? "Chat"
+            let sentAt = event.sentAt ?? ""
+            var convo = Conversation(id: conversationID, name: name, participants: [], lastActivityAt: sentAt)
+            convo.lastMessagePreview = event.text
+            if let activeID = ChatViewController.activeConversationID, activeID == conversationID {
+                convo.unreadCount = 0
+            } else {
+                convo.unreadCount = 1
+            }
+            conversations.insert(convo, at: 0)
+        }
+
+        tableView.reloadData()
+    }
+
+    @objc private func handleConversationRead(_ notification: Notification) {
+        guard let conversationID = notification.userInfo?["conversationID"] as? String else {
+            return
+        }
+        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[index].unreadCount = 0
+            tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
+        }
     }
 }
