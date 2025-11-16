@@ -4,7 +4,7 @@ struct Conversation: Decodable {
     let id: String
     let name: String
     let participants: [String]
-    let lastActivityAt: String
+    var lastActivityAt: String
     var unreadCount: Int = 0
     var lastMessagePreview: String?
 
