@@ -5,6 +5,13 @@ struct Conversation: Decodable {
     let name: String
     let participants: [String]
     let lastActivityAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case participants
+        case lastActivityAt = "last_activity_at"
+    }
 }
 
 final class MessagesViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
@@ -35,6 +42,10 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         ])
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(didTapNewChat))
+
+        SessionManager.shared.refreshSession { _ in
+            ChatWebSocketManager.shared.connectIfNeeded()
+        }
 
         loadConversations()
     }
@@ -160,4 +171,3 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         showConversation(conversation)
     }
 }
-

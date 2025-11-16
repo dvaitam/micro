@@ -5,6 +5,13 @@ struct ChatMessage: Decodable {
     let sender: String
     let text: String
     let sentAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case sender
+        case text
+        case sentAt = "sent_at"
+    }
 }
 
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
@@ -38,13 +45,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         setupUI()
         loadMessages()
         registerForKeyboardNotifications()
+        NotificationCenter.default.addObserver(self, selector: #selector(handleIncomingMessage(_:)), name: .chatMessageReceived, object: nil)
     }
 
     private func setupUI() {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
+        tableView.register(ChatMessageCell.self, forCellReuseIdentifier: "MessageCell")
+        tableView.separatorStyle = .none
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 44
 
         messageField.translatesAutoresizingMaskIntoConstraints = false
         messageField.borderStyle = .roundedRect
@@ -171,29 +182,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         messageField.text = nil
 
-        urlSession.dataTask(with: request) { [weak self] data, response, error in
+        urlSession.dataTask(with: request) { _, response, error in
             DispatchQueue.main.async {
-                guard let self = self else { return }
-
-                if let data = data {
-                    do {
-                        if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                           let msgDict = json["message"] as? [String: Any],
-                           let id = msgDict["id"] as? String,
-                           let sender = msgDict["sender"] as? String,
-                           let text = msgDict["text"] as? String,
-                           let sentAt = msgDict["sent_at"] as? String {
-                            let message = ChatMessage(id: id, sender: sender, text: text, sentAt: sentAt)
-                            self.messages.append(message)
-                            self.tableView.reloadData()
-                            let indexPath = IndexPath(row: self.messages.count - 1, section: 0)
-                            self.tableView.scrollToRow(at: indexPath, at: .bottom, animated: true)
-                        }
-                    } catch {
-                        print("Failed to decode created message: \(error)")
-                    }
-                } else if let error = error {
+                if let error = error {
                     print("Failed to send message: \(error)")
+                    return
+                }
+                if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+                    print("Send message failed with status: \(httpResponse.statusCode)")
                 }
             }
         }.resume()
@@ -206,10 +202,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: "MessageCell", for: indexPath) as? ChatMessageCell else {
+            return UITableViewCell()
+        }
         let message = messages[indexPath.row]
-        cell.textLabel?.numberOfLines = 0
-        cell.textLabel?.text = "\(message.sender): \(message.text)"
+        let isOutgoing = (message.sender == SessionManager.shared.email)
+        cell.configure(with: message, isOutgoing: isOutgoing)
         return cell
     }
 
@@ -217,5 +215,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+    }
+
+    @objc private func handleIncomingMessage(_ notification: Notification) {
+        guard let event = notification.userInfo?["event"] as? ChatSocketEvent else {
+            return
+        }
+        guard event.type == "message", event.conversationID == conversation.id else {
+            return
+        }
+        guard let sender = event.from, let text = event.text, let sentAt = event.sentAt else {
+            return
+        }
+
+        let message = ChatMessage(id: UUID().uuidString, sender: sender, text: text, sentAt: sentAt)
+        messages.append(message)
+        tableView.reloadData()
+        let indexPath = IndexPath(row: messages.count - 1, section: 0)
+        tableView.scrollToRow(at: indexPath, at: .bottom, animated: true)
     }
 }

@@ -626,6 +626,7 @@ func main() {
 	mux.HandleFunc("/api/conversations/", handleAPIConversationResource)
 	mux.HandleFunc("/api/device", handleRegisterDevice)
 	mux.HandleFunc("/api/device/associate", handleAssociateDevice)
+	mux.HandleFunc("/api/session", handleAPISession)
 
 	fmt.Println("Registration API running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -672,6 +673,25 @@ func ensureSchema() error {
 	}
 
 	return nil
+}
+
+func handleAPISession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	sess, err := getSessionFromRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"email": sess.Email,
+		"token": sess.Token,
+	})
 }
 
 func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
