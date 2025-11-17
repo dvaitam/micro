@@ -24,6 +24,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	redis "github.com/redis/go-redis/v9"
 )
 
 var (
@@ -33,6 +34,7 @@ var (
 	chatTmpl   *template.Template
 	messageSvc *messageServiceClient
 	jwtSecret  []byte
+	redisClient *redis.Client
 )
 
 const indexTpl = `
@@ -601,6 +603,11 @@ func main() {
 		log.Fatal("MESSAGE_SERVICE_URL must be set")
 	}
 
+	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	if redisAddr == "" {
+		redisAddr = "redis:6379"
+	}
+
 	var err error
 	db, err = sql.Open("mysql", mysqlDSN)
 	if err != nil {
@@ -614,6 +621,13 @@ func main() {
 
 	if err := ensureSchema(); err != nil {
 		log.Fatalf("schema setup error: %v", err)
+	}
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Fatalf("redis connection error: %v", err)
 	}
 
 	writer = &kafka.Writer{
@@ -1183,6 +1197,24 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to send message"})
 				return
 			}
+
+			// Broadcast chat event to websocket server via Redis so all
+			// connected clients receive this message in real time.
+			if redisClient != nil {
+				event := &chatRedisEvent{
+					Type:             "message",
+					Participants:     msg.Participants,
+					ConversationID:   msg.ConversationID,
+					ConversationName: msg.Name,
+					From:             msg.Sender,
+					Text:             msg.Text,
+					SentAt:           msg.SentAt,
+				}
+				if err := publishChatEvent(context.Background(), event); err != nil {
+					log.Printf("redis publish error: %v", err)
+				}
+			}
+
 			writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 			return
 
@@ -1443,6 +1475,17 @@ type createdMessage struct {
 	Name           string   `json:"conversation_name,omitempty"`
 }
 
+type chatRedisEvent struct {
+	Type             string           `json:"type"`
+	Participants     []string         `json:"participants"`
+	ConversationID   string           `json:"conversation_id,omitempty"`
+	ConversationName string           `json:"conversation_name,omitempty"`
+	From             string           `json:"from,omitempty"`
+	Text             string           `json:"text,omitempty"`
+	SentAt           string           `json:"sent_at,omitempty"`
+	Conversation     *conversationView `json:"conversation,omitempty"`
+}
+
 var errNotFound = errors.New("not found")
 
 type messageServiceClient struct {
@@ -1457,6 +1500,17 @@ func newMessageServiceClient(baseURL string) *messageServiceClient {
 			Timeout: 5 * time.Second,
 		},
 	}
+}
+
+func publishChatEvent(ctx context.Context, event *chatRedisEvent) error {
+	if redisClient == nil || event == nil {
+		return nil
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return redisClient.Publish(ctx, "chat:messages", data).Err()
 }
 
 func (m *messageServiceClient) ListConversations(ctx context.Context, email string) ([]conversationView, error) {

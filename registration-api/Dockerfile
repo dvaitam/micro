@@ -7,6 +7,7 @@ RUN go mod init registration-api
 RUN go get github.com/segmentio/kafka-go
 RUN go get github.com/go-sql-driver/mysql
 RUN go get github.com/google/uuid
+RUN go get github.com/redis/go-redis/v9
 COPY . .
 RUN go build -o app .
 

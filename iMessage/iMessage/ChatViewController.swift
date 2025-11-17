@@ -72,6 +72,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.separatorStyle = .none
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 44
+        tableView.keyboardDismissMode = .interactive
 
         messageField.translatesAutoresizingMaskIntoConstraints = false
         messageField.borderStyle = .roundedRect
@@ -135,7 +136,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         UIView.animate(withDuration: duration, delay: 0, options: options, animations: {
             self.view.layoutIfNeeded()
-        }, completion: nil)
+        }, completion: { _ in
+            if overlap > 0 {
+                self.scrollToBottom(animated: true)
+            }
+        })
     }
 
     @objc private func dismissKeyboard() {
@@ -152,27 +157,34 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         urlSession.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
+            guard let self = self else { return }
 
-                if let data = data {
-                    struct Response: Decodable {
-                        let messages: [ChatMessage]
-                    }
-                    do {
-                        let decoded = try JSONDecoder().decode(Response.self, from: data)
-                        self.messages = decoded.messages
-                        self.tableView.reloadData()
-                        if !self.messages.isEmpty {
-                            let indexPath = IndexPath(row: self.messages.count - 1, section: 0)
-                            self.tableView.scrollToRow(at: indexPath, at: .bottom, animated: false)
-                        }
-                    } catch {
-                        print("Failed to decode messages: \(error)")
-                    }
-                } else if let error = error {
-                    print("Failed to load messages: \(error)")
-                }
+            if let error = error {
+                print("Failed to load messages: \(error)")
+                return
+            }
+
+            guard let data = data else {
+                return
+            }
+
+            struct Response: Decodable {
+                let messages: [ChatMessage]
+            }
+
+            let decodedMessages: [ChatMessage]
+            do {
+                let decoded = try JSONDecoder().decode(Response.self, from: data)
+                decodedMessages = decoded.messages
+            } catch {
+                print("Failed to decode messages: \(error)")
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.messages = decodedMessages
+                self.tableView.reloadData()
+                self.scrollToBottom(animated: false)
             }
         }.resume()
     }
@@ -204,14 +216,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         messageField.text = nil
 
-        urlSession.dataTask(with: request) { _, response, error in
+        urlSession.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let error = error {
                     print("Failed to send message: \(error)")
                     return
                 }
-                if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    print("Send message failed: invalid response")
+                    return
+                }
+
+                guard (200...299).contains(httpResponse.statusCode) else {
                     print("Send message failed with status: \(httpResponse.statusCode)")
+                    return
+                }
+
+                guard let data = data else {
+                    return
+                }
+
+                struct SendResponse: Decodable {
+                    let message: ChatMessage
+                }
+
+                if let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) {
+                    self.messages.append(decoded.message)
+                    let indexPath = IndexPath(row: self.messages.count - 1, section: 0)
+                    self.tableView.insertRows(at: [indexPath], with: .none)
+                    self.scrollToBottom(animated: true)
                 }
             }
         }.resume()
@@ -250,10 +283,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
 
+        if let last = messages.last,
+           last.sender == sender,
+           last.text == text,
+           last.sentAt == sentAt {
+            return
+        }
+
         let message = ChatMessage(id: UUID().uuidString, sender: sender, text: text, sentAt: sentAt)
         messages.append(message)
-        tableView.reloadData()
         let indexPath = IndexPath(row: messages.count - 1, section: 0)
-        tableView.scrollToRow(at: indexPath, at: .bottom, animated: true)
+        tableView.insertRows(at: [indexPath], with: .automatic)
+        scrollToBottom(animated: true)
+    }
+
+    private func scrollToBottom(animated: Bool) {
+        guard !messages.isEmpty else { return }
+        let indexPath = IndexPath(row: messages.count - 1, section: 0)
+        tableView.scrollToRow(at: indexPath, at: .bottom, animated: animated)
     }
 }

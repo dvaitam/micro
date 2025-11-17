@@ -23,6 +23,7 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
 
     private let tableView = UITableView(frame: .zero, style: .plain)
     private var conversations: [Conversation] = []
+    private var hasLoadedConversations = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -51,7 +52,15 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         NotificationCenter.default.addObserver(self, selector: #selector(handleIncomingMessage(_:)), name: .chatMessageReceived, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleConversationRead(_:)), name: .chatConversationRead, object: nil)
 
-        loadConversations()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
+        if !hasLoadedConversations {
+            hasLoadedConversations = true
+            loadConversations()
+        }
     }
 
     deinit {
@@ -68,24 +77,34 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         urlSession.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
+            guard let self = self else { return }
 
-                if let data = data {
-                    struct Response: Decodable {
-                        let conversations: [Conversation]
-                    }
-                    do {
-                        let decoded = try JSONDecoder().decode(Response.self, from: data)
-                        self.conversations = decoded.conversations
-                        self.loadLastMessagesForConversations()
-                        self.tableView.reloadData()
-                    } catch {
-                        print("Failed to decode conversations: \(error)")
-                    }
-                } else if let error = error {
-                    print("Failed to load conversations: \(error)")
-                }
+            if let error = error {
+                print("Failed to load conversations: \(error)")
+                return
+            }
+
+            guard let data = data else {
+                return
+            }
+
+            struct Response: Decodable {
+                let conversations: [Conversation]
+            }
+
+            let decodedConversations: [Conversation]
+            do {
+                let decoded = try JSONDecoder().decode(Response.self, from: data)
+                decodedConversations = decoded.conversations
+            } catch {
+                print("Failed to decode conversations: \(error)")
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.conversations = decodedConversations
+                self.loadLastMessagesForConversations()
+                self.tableView.reloadData()
             }
         }.resume()
     }
@@ -106,30 +125,38 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         urlSession.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("Failed to load last message: \(error)")
+                return
+            }
+
+            guard let data = data else {
+                return
+            }
+
+            struct Response: Decodable {
+                let messages: [ChatMessage]
+            }
+
+            let lastMessage: ChatMessage?
+            do {
+                let decoded = try JSONDecoder().decode(Response.self, from: data)
+                lastMessage = decoded.messages.last
+            } catch {
+                print("Failed to decode last message: \(error)")
+                return
+            }
+
+            guard let last = lastMessage else {
+                return
+            }
+
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard let data = data else {
-                    if let error = error {
-                        print("Failed to load last message: \(error)")
-                    }
-                    return
-                }
-
-                struct Response: Decodable {
-                    let messages: [ChatMessage]
-                }
-
-                do {
-                    let decoded = try JSONDecoder().decode(Response.self, from: data)
-                    guard let last = decoded.messages.last else {
-                        return
-                    }
-                    if let index = self.conversations.firstIndex(where: { $0.id == conversation.id }) {
-                        self.conversations[index].lastMessagePreview = last.text
-                        self.tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
-                    }
-                } catch {
-                    print("Failed to decode last message: \(error)")
+                if let index = self.conversations.firstIndex(where: { $0.id == conversation.id }) {
+                    self.conversations[index].lastMessagePreview = last.text
+                    self.tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
                 }
             }
         }.resume()
@@ -221,8 +248,21 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ??
             UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
         let conversation = conversations[indexPath.row]
-        let title = conversation.name.isEmpty ? conversation.participants.joined(separator: ", ") : conversation.name
-        cell.textLabel?.text = title
+        if let currentEmail = SessionManager.shared.email {
+            if !conversation.name.isEmpty {
+                // If the stored name is exactly the current user, show "Me".
+                cell.textLabel?.text = (conversation.name == currentEmail) ? "Me" : conversation.name
+            } else {
+                let displayParticipants = conversation.participants.map { participant -> String in
+                    return participant == currentEmail ? "Me" : participant
+                }
+                cell.textLabel?.text = displayParticipants.isEmpty ? "Chat" : displayParticipants.joined(separator: ", ")
+            }
+        } else {
+            cell.textLabel?.text = conversation.name.isEmpty
+                ? (conversation.participants.isEmpty ? "Chat" : conversation.participants.joined(separator: ", "))
+                : conversation.name
+        }
 
         if conversation.unreadCount > 0 {
             if let preview = conversation.lastMessagePreview, !preview.isEmpty {
