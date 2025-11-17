@@ -266,37 +266,77 @@ const chatTpl = `
         });
     }
 
+    async function loadAllUsers(query = '') {
+        try {
+            let url = '/api/users/all';
+            if (query && query.trim()) {
+                url += '?q=' + encodeURIComponent(query.trim());
+            }
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('Unable to load users');
+            }
+            const data = await response.json();
+            const list = Array.isArray(data.users) ? data.users : [];
+            renderUsers(list);
+        } catch (err) {
+            console.error(err);
+            renderUsers([]);
+        }
+    }
+
     function renderUsers(users) {
         const previouslySelected = new Set(Array.from(usersEl.querySelectorAll('input[type="checkbox"]:checked')).map((cb) => cb.dataset.email));
         usersEl.innerHTML = '';
-        const sorted = Array.isArray(users) ? users.slice().sort() : [];
+        const sorted = Array.isArray(users) ? users.slice().sort((a, b) => {
+            const nameA = (a.name || a.email || '').toLowerCase();
+            const nameB = (b.name || b.email || '').toLowerCase();
+            if (nameA < nameB) return -1;
+            if (nameA > nameB) return 1;
+            return 0;
+        }) : [];
         let hasSelectable = false;
         sorted.forEach((user) => {
-            const li = document.createElement('li');
-            if (user === currentUser) {
-                li.textContent = user + ' (you)';
-                li.classList.add('you');
-            } else {
-                hasSelectable = true;
-                const label = document.createElement('label');
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.dataset.email = user;
-                if (previouslySelected.has(user)) {
-                    checkbox.checked = true;
-                }
-                const span = document.createElement('span');
-                span.textContent = user;
-                label.appendChild(checkbox);
-                label.appendChild(span);
-                li.appendChild(label);
+            const email = user.email || '';
+            if (!email) {
+                return;
             }
+            const li = document.createElement('li');
+            const isCurrentUser = email === currentUser;
+
+            const label = document.createElement('label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.dataset.email = email;
+            if (previouslySelected.has(email)) {
+                checkbox.checked = true;
+            }
+
+            const avatar = document.createElement('img');
+            avatar.className = 'avatar';
+            if (user.has_avatar) {
+                avatar.src = '/api/users/photo?email=' + encodeURIComponent(email);
+            }
+
+            const textSpan = document.createElement('span');
+            const displayName = user.name && user.name.trim() ? user.name.trim() : email;
+            textSpan.textContent = isCurrentUser ? (displayName + ' (you)') : displayName;
+
+            if (!isCurrentUser) {
+                hasSelectable = true;
+                label.appendChild(checkbox);
+            } else {
+                li.classList.add('you');
+            }
+            label.appendChild(avatar);
+            label.appendChild(textSpan);
+            li.appendChild(label);
             usersEl.appendChild(li);
         });
         if (!hasSelectable) {
             const empty = document.createElement('li');
             empty.classList.add('empty');
-            empty.textContent = 'No other users online';
+            empty.textContent = 'No other users available';
             usersEl.appendChild(empty);
         }
     }
