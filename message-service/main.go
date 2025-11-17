@@ -269,11 +269,13 @@ func (s *server) listConversations(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]map[string]interface{}, 0, len(conversations))
 	for _, c := range conversations {
+		isGroup := isGroupConversation(c.Name, c.Participants)
 		resp = append(resp, map[string]interface{}{
 			"id":               c.ID.String(),
 			"name":             c.Name,
 			"participants":     c.Participants,
 			"last_activity_at": c.LastActivityAt.UTC().Format(time.RFC3339),
+			"is_group":         isGroup,
 		})
 	}
 
@@ -370,13 +372,15 @@ func (s *server) getConversation(w http.ResponseWriter, r *http.Request, id gocq
 		return
 	}
 
+	sortedParticipants := copyAndSort(participants)
 	resp := map[string]interface{}{
 		"id":               id.String(),
 		"name":             name,
-		"participants":     copyAndSort(participants),
+		"participants":     sortedParticipants,
 		"created_by":       createdBy,
 		"created_at":       createdAt.UTC().Format(time.RFC3339),
 		"last_activity_at": lastActivity.UTC().Format(time.RFC3339),
+		"is_group":         isGroupConversation(name, sortedParticipants),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -607,6 +611,31 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 			log.Printf("failed to encode json: %v", err)
 		}
 	}
+}
+
+func isGroupConversation(name string, participants []string) bool {
+	// Self-chat is never a group.
+	if len(participants) <= 1 {
+		return false
+	}
+	// More than two participants is always a group.
+	if len(participants) > 2 {
+		return true
+	}
+	// At this point, there are exactly two participants.
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return false
+	}
+	// If the name matches one of the participant emails, treat as a
+	// regular one-to-one conversation.
+	for _, p := range participants {
+		if trimmedName == p {
+			return false
+		}
+	}
+	// Otherwise, a custom name for a 2-person conversation indicates a group.
+	return true
 }
 
 func logRequest(next http.Handler) http.Handler {

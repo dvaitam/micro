@@ -1670,6 +1670,7 @@ type conversationView struct {
 	Name           string   `json:"name"`
 	Participants   []string `json:"participants"`
 	LastActivityAt string   `json:"last_activity_at"`
+	IsGroup        bool     `json:"is_group"`
 }
 
 type messageView struct {

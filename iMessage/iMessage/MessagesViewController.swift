@@ -7,12 +7,14 @@ struct Conversation: Decodable {
     var lastActivityAt: String
     var unreadCount: Int = 0
     var lastMessagePreview: String?
+    let isGroup: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
         case name
         case participants
         case lastActivityAt = "last_activity_at"
+        case isGroup = "is_group"
     }
 }
 
@@ -409,6 +411,7 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
 
     private func title(for conversation: Conversation) -> String {
         guard let currentEmail = SessionManager.shared.email else {
+            // No logged-in user; fall back to stored name or raw participants.
             if !conversation.name.isEmpty {
                 return conversation.name
             }
@@ -422,32 +425,17 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return "Me"
         }
 
-        // One-to-one chat: decide based on conversation.name when set.
-        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
-            if !conversation.name.isEmpty {
-                // If the name matches the current user, show "Me".
-                if conversation.name == currentEmail {
-                    return "Me"
-                }
-                // If the name matches the other participant, show their display name.
-                if conversation.name == other {
-                    return displayName(for: other, currentEmail: currentEmail)
-                }
-                // Otherwise, treat name as a custom title.
-                return conversation.name
-            }
-            // No explicit name; show the other participant's display name.
+        // One-to-one direct chat (not a group): show the other participant.
+        if !conversation.isGroup, participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
             return displayName(for: other, currentEmail: currentEmail)
         }
 
-        // Group or unnamed chats: prefer explicit name.
+        // Group chat (including 2-person groups): use the explicit name when present.
         if !conversation.name.isEmpty {
-            if conversation.name == currentEmail {
-                return "Me"
-            }
             return conversation.name
         }
 
+        // Fallback: list participants with profile names and "Me" for self.
         let displayParticipants = participants.map { participant -> String in
             if participant == currentEmail {
                 return "Me"
@@ -479,12 +467,12 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return currentEmail
         }
 
-        // One-to-one chat: avatar is the other participant.
-        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
+        // One-to-one direct chat (not a group): avatar is the other participant.
+        if !conversation.isGroup, participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
             return other
         }
 
-        // For group chats, we don't show a specific avatar here.
+        // For group chats (including 2-person groups), we don't show a specific avatar here.
         return nil
     }
 
