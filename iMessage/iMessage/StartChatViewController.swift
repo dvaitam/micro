@@ -14,6 +14,13 @@ struct ChatUserSummary: Decodable {
 
 protocol StartChatViewControllerDelegate: AnyObject {
     func startChatViewController(_ controller: StartChatViewController, didCreate conversation: Conversation)
+    func startChatViewController(_ controller: StartChatViewController, existingConversationMatching participants: [String]) -> Conversation?
+}
+
+extension StartChatViewControllerDelegate {
+    func startChatViewController(_ controller: StartChatViewController, existingConversationMatching participants: [String]) -> Conversation? {
+        return nil
+    }
 }
 
 final class StartChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
@@ -203,6 +210,18 @@ final class StartChatViewController: UIViewController, UITableViewDataSource, UI
             let alert = UIAlertController(title: "Select Users", message: "Please select at least one user.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
             present(alert, animated: true, completion: nil)
+            return
+        }
+
+        var participantSet = Set(participants.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        if let currentUserEmail = SessionManager.shared.email {
+            participantSet.insert(currentUserEmail)
+        }
+        let normalizedParticipants = Array(participantSet)
+
+        if let existingConversation = delegate?.startChatViewController(self, existingConversationMatching: normalizedParticipants) {
+            delegate?.startChatViewController(self, didCreate: existingConversation)
+            dismiss(animated: true, completion: nil)
             return
         }
 
@@ -407,4 +426,3 @@ final class StartChatViewController: UIViewController, UITableViewDataSource, UI
         }.resume()
     }
 }
-

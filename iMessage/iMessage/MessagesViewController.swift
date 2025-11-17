@@ -39,6 +39,11 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     private var conversations: [Conversation] = []
     private var userProfiles: [String: UserProfileSummary] = [:]
     private var avatarCache: [String: UIImage] = [:]
+    private var conversationAvatarCache: [String: UIImage] = [:]
+    private var loadingConversationAvatarIDs: Set<String> = []
+    private var missingConversationAvatarIDs: Set<String> = []
+    private let userPlaceholderImage = UIImage(systemName: "person.circle.fill")
+    private let groupPlaceholderImage = UIImage(systemName: "person.3.fill")
     private var hasLoadedConversations = false
 
     override func viewDidLoad() {
@@ -340,9 +345,42 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         if let email = SessionManager.shared.email {
             ConversationUnreadStore.shared.setUnreadCount(0, for: conversation.id, email: email)
         }
+        if let existingIndex = conversations.firstIndex(where: { $0.id == conversation.id }) {
+            let existingConversation = conversations.remove(at: existingIndex)
+            if updatedConversation.lastMessagePreview == nil {
+                updatedConversation.lastMessagePreview = existingConversation.lastMessagePreview
+            }
+            if updatedConversation.lastActivityAt.isEmpty {
+                updatedConversation.lastActivityAt = existingConversation.lastActivityAt
+            }
+        }
         conversations.insert(updatedConversation, at: 0)
         tableView.reloadData()
         showConversation(updatedConversation)
+
+        if updatedConversation.isGroup {
+            loadConversationAvatar(for: updatedConversation.id)
+        } else if let email = primaryEmail(for: updatedConversation) {
+            loadAvatar(for: email)
+        }
+    }
+
+    func startChatViewController(_ controller: StartChatViewController, existingConversationMatching participants: [String]) -> Conversation? {
+        var normalizedTarget = Set(participants.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        if normalizedTarget.isEmpty {
+            return nil
+        }
+        if let currentUserEmail = SessionManager.shared.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !currentUserEmail.isEmpty {
+            normalizedTarget.insert(currentUserEmail)
+        }
+
+        for conversation in conversations {
+            let normalizedParticipants = Set(conversation.participants.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+            if normalizedParticipants == normalizedTarget {
+                return conversation
+            }
+        }
+        return nil
     }
 
     // MARK: UITableViewDataSource
@@ -389,22 +427,38 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         }
         cell.accessoryType = .none
 
-        // Configure avatar image for the primary participant in this conversation.
-        if let email = primaryEmail(for: conversation) {
-            if let image = avatarCache[email] {
-                cell.imageView?.image = image
-            } else if let profile = userProfiles[email], profile.hasAvatar {
-                // Start loading avatar if we know one exists.
-                loadAvatar(for: email)
-                cell.imageView?.image = nil
+        var avatarImage: UIImage? = nil
+        var tintColor: UIColor? = nil
+
+        if conversation.isGroup {
+            if let image = conversationAvatarCache[conversation.id] {
+                avatarImage = image
             } else {
-                cell.imageView?.image = nil
+                if !missingConversationAvatarIDs.contains(conversation.id) {
+                    loadConversationAvatar(for: conversation.id)
+                }
+                avatarImage = groupPlaceholderImage ?? userPlaceholderImage
+                tintColor = .systemGray3
+            }
+        } else if let email = primaryEmail(for: conversation) {
+            if let image = avatarCache[email] {
+                avatarImage = image
+            } else if let profile = userProfiles[email], profile.hasAvatar {
+                loadAvatar(for: email)
+                avatarImage = userPlaceholderImage
+                tintColor = .systemGray3
+            } else {
+                avatarImage = userPlaceholderImage
+                tintColor = .systemGray3
             }
         } else {
-            cell.imageView?.image = nil
+            avatarImage = userPlaceholderImage
+            tintColor = .systemGray3
         }
 
         if let imageView = cell.imageView {
+            imageView.image = avatarImage
+            imageView.tintColor = tintColor
             imageView.layer.cornerRadius = 18
             imageView.layer.masksToBounds = true
             imageView.contentMode = .scaleAspectFill
@@ -478,6 +532,62 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
 
         // For group chats (including 2-person groups), we don't show a specific avatar here.
         return nil
+    }
+
+    private func loadConversationAvatar(for conversationID: String) {
+        if conversationAvatarCache[conversationID] != nil || loadingConversationAvatarIDs.contains(conversationID) {
+            return
+        }
+        if missingConversationAvatarIDs.contains(conversationID) {
+            return
+        }
+
+        guard let url = URL(string: "/api/conversations/\(conversationID)/photo", relativeTo: baseURL) else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        loadingConversationAvatarIDs.insert(conversationID)
+
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            self.loadingConversationAvatarIDs.remove(conversationID)
+
+            if let error = error {
+                print("Failed to load conversation avatar for \(conversationID): \(error)")
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return
+            }
+
+            if httpResponse.statusCode == 404 {
+                DispatchQueue.main.async {
+                    self.missingConversationAvatarIDs.insert(conversationID)
+                }
+                return
+            }
+
+            guard httpResponse.statusCode == 200,
+                  let data = data,
+                  let image = UIImage(data: data) else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.conversationAvatarCache[conversationID] = image
+                if let row = self.conversations.firstIndex(where: { $0.id == conversationID }) {
+                    self.tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
+                } else {
+                    self.tableView.reloadData()
+                }
+            }
+        }.resume()
     }
 
     private func loadAvatar(for email: String) {
