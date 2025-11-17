@@ -62,11 +62,17 @@ final class DeviceManager {
             return
         }
 
+        guard let authToken = SessionManager.shared.token else {
+            completion?(.failure(NSError(domain: "DeviceManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing auth token"])))
+            return
+        }
+
         let payload = DeviceTokenPayload(device_token: token, platform: nil)
         let url = apiBaseURL.appendingPathComponent("/api/device/associate")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
         do {
             request.httpBody = try JSONEncoder().encode(payload)
@@ -89,4 +95,3 @@ final class DeviceManager {
         }.resume()
     }
 }
-

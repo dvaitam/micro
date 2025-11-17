@@ -127,22 +127,26 @@ class ViewController: UIViewController {
     }
 
     private func requestOTP(email: String) {
-        guard let url = URL(string: "/request-otp", relativeTo: baseURL) else {
+        guard let url = URL(string: "/api/request-otp", relativeTo: baseURL) else {
             statusLabel.text = "Invalid API URL."
             return
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-        let encodedEmail = email.addingPercentEncoding(withAllowedCharacters: allowed) ?? email
-        request.httpBody = "email=\(encodedEmail)".data(using: .utf8)
+        let payload = ["email": email]
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+        } catch {
+            statusLabel.text = "Failed to encode request."
+            return
+        }
 
         statusLabel.text = "Requesting OTP..."
 
-        urlSession.dataTask(with: request) { [weak self] _, response, error in
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
@@ -156,14 +160,14 @@ class ViewController: UIViewController {
                     return
                 }
 
-                if !(200...399).contains(httpResponse.statusCode) {
-                    self.statusLabel.text = "OTP request failed with status \(httpResponse.statusCode)."
-                    return
-                }
-
-                let finalURL = httpResponse.url
-                if let query = finalURL?.query, query.contains("error=") {
-                    self.statusLabel.text = "Unable to send OTP. Please try again."
+                if httpResponse.statusCode != 200 {
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                       let message = json["error"] as? String {
+                        self.statusLabel.text = message
+                    } else {
+                        self.statusLabel.text = "OTP request failed with status \(httpResponse.statusCode)."
+                    }
                     return
                 }
 
@@ -173,23 +177,29 @@ class ViewController: UIViewController {
     }
 
     private func verifyOTP(email: String, code: String) {
-        guard let url = URL(string: "/verify-otp", relativeTo: baseURL) else {
+        guard let url = URL(string: "/api/verify-otp", relativeTo: baseURL) else {
             statusLabel.text = "Invalid API URL."
             return
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-        let encodedEmail = email.addingPercentEncoding(withAllowedCharacters: allowed) ?? email
-        let encodedCode = code.addingPercentEncoding(withAllowedCharacters: allowed) ?? code
-        request.httpBody = "email=\(encodedEmail)&otp=\(encodedCode)".data(using: .utf8)
+        let payload: [String: Any] = [
+            "email": email,
+            "otp": code
+        ]
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+        } catch {
+            statusLabel.text = "Failed to encode request."
+            return
+        }
 
         statusLabel.text = "Verifying OTP..."
 
-        urlSession.dataTask(with: request) { [weak self] _, response, error in
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
@@ -203,21 +213,41 @@ class ViewController: UIViewController {
                     return
                 }
 
-                if !(200...399).contains(httpResponse.statusCode) {
-                    self.statusLabel.text = "OTP verification failed with status \(httpResponse.statusCode)."
+                if httpResponse.statusCode != 200 {
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                       let message = json["error"] as? String {
+                        self.statusLabel.text = message
+                    } else {
+                        self.statusLabel.text = "OTP verification failed with status \(httpResponse.statusCode)."
+                    }
                     return
                 }
 
-                let finalURL = httpResponse.url
-                if let query = finalURL?.query, query.contains("error=") {
-                    self.statusLabel.text = "Invalid OTP. Please try again."
+                guard let data = data else {
+                    self.statusLabel.text = "Empty response from server."
                     return
                 }
 
-                // Treat any successful response without error as a successful login.
-                self.statusLabel.text = "Login successful."
-                self.userDidLogin()
-                self.showMessages()
+                struct VerifyResponse: Decodable {
+                    let email: String
+                    let accessToken: String
+
+                    enum CodingKeys: String, CodingKey {
+                        case email
+                        case accessToken = "access_token"
+                    }
+                }
+
+                do {
+                    let response = try JSONDecoder().decode(VerifyResponse.self, from: data)
+                    SessionManager.shared.updateSession(email: response.email, token: response.accessToken)
+                    self.statusLabel.text = "Login successful."
+                    self.userDidLogin()
+                    self.showMessages()
+                } catch {
+                    self.statusLabel.text = "Failed to parse login response."
+                }
             }
         }.resume()
     }
@@ -227,7 +257,10 @@ class ViewController: UIViewController {
             return
         }
 
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         urlSession.dataTask(with: request) { [weak self] _, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }

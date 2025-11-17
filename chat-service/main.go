@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +32,8 @@ type server struct {
 	mu      sync.RWMutex
 	clients map[string]*client
 }
+
+var jwtSecret []byte
 
 type client struct {
 	email     string
@@ -58,6 +63,12 @@ func main() {
 	mysqlDSN := os.Getenv("MYSQL_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	messageSvcURL := os.Getenv("MESSAGE_SERVICE_URL")
+	jwtSecretValue := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if jwtSecretValue != "" {
+		jwtSecret = []byte(jwtSecretValue)
+	} else {
+		log.Println("JWT_SECRET is not set; JWT tokens for websocket auth will not be accepted")
+	}
 	if mysqlDSN == "" {
 		log.Fatal("MYSQL_DSN must be set")
 	}
@@ -156,6 +167,17 @@ func (s *server) validateSession(token string) (string, error) {
 		token,
 	).Scan(&email, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Fall back to JWT validation if configured.
+		if len(jwtSecret) > 0 {
+			emailFromJWT, exp, jwtErr := parseJWT(token)
+			if jwtErr != nil {
+				return "", jwtErr
+			}
+			if time.Now().After(exp) {
+				return "", errors.New("session expired")
+			}
+			return emailFromJWT, nil
+		}
 		return "", errors.New("session not found")
 	}
 	if err != nil {
@@ -553,4 +575,72 @@ func sendError(cl *client, message string) {
 		return
 	}
 	cl.sendMessage(data)
+}
+
+type jwtClaims struct {
+	Sub   string `json:"sub"`
+	Exp   int64  `json:"exp"`
+	Iat   int64  `json:"iat"`
+	Scope string `json:"scope,omitempty"`
+}
+
+func parseJWT(token string) (string, time.Time, error) {
+	if len(jwtSecret) == 0 {
+		return "", time.Time{}, errors.New("jwt secret not configured")
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", time.Time{}, errors.New("invalid jwt format")
+	}
+
+	enc := base64.RawURLEncoding
+
+	headerBytes, err := enc.DecodeString(parts[0])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt header encoding")
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return "", time.Time{}, errors.New("invalid jwt header")
+	}
+	alg, _ := header["alg"].(string)
+	if alg != "HS256" {
+		return "", time.Time{}, errors.New("unsupported jwt alg")
+	}
+
+	signature, err := enc.DecodeString(parts[2])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt signature encoding")
+	}
+
+	unsigned := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, jwtSecret)
+	if _, err := mac.Write([]byte(unsigned)); err != nil {
+		return "", time.Time{}, err
+	}
+	expectedSig := mac.Sum(nil)
+	if !hmac.Equal(expectedSig, signature) {
+		return "", time.Time{}, errors.New("invalid jwt signature")
+	}
+
+	payloadBytes, err := enc.DecodeString(parts[1])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt payload encoding")
+	}
+
+	var claims jwtClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return "", time.Time{}, errors.New("invalid jwt claims")
+	}
+
+	if claims.Sub == "" {
+		return "", time.Time{}, errors.New("jwt missing subject")
+	}
+	if claims.Exp == 0 {
+		return "", time.Time{}, errors.New("jwt missing exp")
+	}
+
+	expiresAt := time.Unix(claims.Exp, 0)
+	return claims.Sub, expiresAt, nil
 }

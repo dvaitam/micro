@@ -63,7 +63,10 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return
         }
 
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         urlSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -98,7 +101,10 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return
         }
 
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         urlSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -155,6 +161,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         let payload: [String: Any] = [
             "name": "",

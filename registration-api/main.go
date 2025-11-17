@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +32,7 @@ var (
 	indexTmpl  *template.Template
 	chatTmpl   *template.Template
 	messageSvc *messageServiceClient
+	jwtSecret  []byte
 )
 
 const indexTpl = `
@@ -581,6 +585,12 @@ func main() {
 	kafkaURL := os.Getenv("KAFKA_URL")
 	mysqlDSN := os.Getenv("MYSQL_DSN")
 	messageSvcURL := os.Getenv("MESSAGE_SERVICE_URL")
+	jwtSecretValue := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if jwtSecretValue != "" {
+		jwtSecret = []byte(jwtSecretValue)
+	} else {
+		log.Println("JWT_SECRET is not set; JWT access tokens will be disabled")
+	}
 	if kafkaURL == "" {
 		log.Fatal("KAFKA_URL must be set")
 	}
@@ -622,6 +632,8 @@ func main() {
 	mux.HandleFunc("/register", handleIndex)
 	mux.HandleFunc("/request-otp", handleRequestOTP)
 	mux.HandleFunc("/verify-otp", handleVerifyOTP)
+	mux.HandleFunc("/api/request-otp", handleAPIRequestOTP)
+	mux.HandleFunc("/api/verify-otp", handleAPIVerifyOTP)
 	mux.HandleFunc("/chat", handleChat)
 	mux.HandleFunc("/api/conversations", handleAPIConversations)
 	mux.HandleFunc("/api/conversations/", handleAPIConversationResource)
@@ -689,10 +701,26 @@ func handleAPISession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	response := map[string]interface{}{
 		"email": sess.Email,
 		"token": sess.Token,
-	})
+	}
+
+	if len(jwtSecret) > 0 {
+		if jwtToken, err := generateJWT(sess.Email, sess.ExpiresAt); err == nil {
+			expiresIn := sess.ExpiresAt.Unix() - time.Now().Unix()
+			if expiresIn < 0 {
+				expiresIn = 0
+			}
+			response["access_token"] = jwtToken
+			response["token_type"] = "Bearer"
+			response["expires_in"] = expiresIn
+		} else {
+			log.Printf("jwt generation error: %v", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
@@ -837,6 +865,38 @@ func handleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?msg="+urlQuery("OTP sent if the email exists"), http.StatusSeeOther)
 }
 
+func handleAPIRequestOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+	var payload struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+		return
+	}
+
+	email := strings.TrimSpace(payload.Email)
+	if email == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
+		return
+	}
+
+	msg := kafka.Message{Value: []byte(email)}
+	if err := writer.WriteMessages(r.Context(), msg); err != nil {
+		log.Printf("Kafka write error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to queue otp"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -859,7 +919,7 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := createSession(email)
+	token, expiresAt, err := createSession(email)
 	if err != nil {
 		log.Printf("session creation error: %v", err)
 		http.Redirect(w, r, "/?error="+urlQuery("Unable to create session"), http.StatusSeeOther)
@@ -870,11 +930,74 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		Name:     "session_token",
 		Value:    token,
 		Path:     "/",
-		Expires:  time.Now().Add(24 * time.Hour),
+		Expires:  expiresAt,
 		SameSite: http.SameSiteLaxMode,
 	})
 
 	http.Redirect(w, r, "/chat", http.StatusSeeOther)
+}
+
+func handleAPIVerifyOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+	var payload struct {
+		Email string `json:"email"`
+		OTP   string `json:"otp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+		return
+	}
+
+	email := strings.TrimSpace(payload.Email)
+	code := strings.TrimSpace(payload.OTP)
+	if email == "" || code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email and otp are required"})
+		return
+	}
+
+	if err := verifyOTP(email, code); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	token, expiresAt, err := createSession(email)
+	if err != nil {
+		log.Printf("session creation error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to create session"})
+		return
+	}
+
+	if len(jwtSecret) == 0 {
+		log.Printf("jwt secret is not configured; cannot issue access_token")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt not configured"})
+		return
+	}
+
+	jwtToken, err := generateJWT(email, expiresAt)
+	if err != nil {
+		log.Printf("jwt generation error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to issue access token"})
+		return
+	}
+
+	expiresIn := expiresAt.Unix() - time.Now().Unix()
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"email":         email,
+		"session_token": token,
+		"access_token":  jwtToken,
+		"token_type":    "Bearer",
+		"expires_in":    expiresIn,
+	})
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
@@ -1104,49 +1227,182 @@ func verifyOTP(email, code string) error {
 	return nil
 }
 
-func createSession(email string) (string, error) {
+func createSession(email string) (string, time.Time, error) {
 	token := uuid.NewString()
 	now := time.Now()
-	expires := now.Add(24 * time.Hour)
+	// Extend session lifetime to 90 days for long-lived mobile and web sessions.
+	expires := now.Add(90 * 24 * time.Hour)
 
 	if _, err := db.Exec(
 		"INSERT INTO sessions (token, email, expires_at, created_at) VALUES (?, ?, ?, ?)",
 		token, email, expires, now,
 	); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
-	return token, nil
+	return token, expires, nil
 }
 
 func getSessionFromRequest(r *http.Request) (*session, error) {
-	cookie, err := r.Cookie("session_token")
-	if err != nil {
-		return nil, err
+	token := ""
+
+	if cookie, err := r.Cookie("session_token"); err == nil {
+		token = strings.TrimSpace(cookie.Value)
 	}
-	token := strings.TrimSpace(cookie.Value)
+
 	if token == "" {
-		return nil, errors.New("empty session")
+		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+		if authHeader != "" {
+			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+				token = strings.TrimSpace(authHeader[len("bearer "):])
+			}
+		}
 	}
+
+	if token == "" {
+		return nil, errors.New("missing session token")
+	}
+
 	var sess session
-	err = db.QueryRow(
+	err := db.QueryRow(
 		"SELECT token, email, expires_at FROM sessions WHERE token = ?",
 		token,
 	).Scan(&sess.Token, &sess.Email, &sess.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Fall back to validating as a JWT if configured.
+		if len(jwtSecret) > 0 {
+			email, exp, jwtErr := parseJWT(token)
+			if jwtErr != nil {
+				return nil, jwtErr
+			}
+			if time.Now().After(exp) {
+				return nil, errors.New("session expired")
+			}
+			return &session{
+				Token:     token,
+				Email:     email,
+				ExpiresAt: exp,
+			}, nil
+		}
 		return nil, errors.New("session not found")
 	}
 	if err != nil {
 		return nil, err
 	}
 	if time.Now().After(sess.ExpiresAt) {
-		go func() {
+		go func(token string) {
 			if _, deleteErr := db.Exec("DELETE FROM sessions WHERE token = ?", token); deleteErr != nil {
 				log.Printf("session cleanup error: %v", deleteErr)
 			}
-		}()
+		}(token)
 		return nil, errors.New("session expired")
 	}
 	return &sess, nil
+}
+
+type jwtClaims struct {
+	Sub   string `json:"sub"`
+	Exp   int64  `json:"exp"`
+	Iat   int64  `json:"iat"`
+	Scope string `json:"scope,omitempty"`
+}
+
+func generateJWT(email string, expiresAt time.Time) (string, error) {
+	if len(jwtSecret) == 0 {
+		return "", errors.New("jwt secret not configured")
+	}
+
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now()
+	claims := jwtClaims{
+		Sub: email,
+		Exp: expiresAt.Unix(),
+		Iat: now.Unix(),
+	}
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+
+	enc := base64.RawURLEncoding
+	unsigned := enc.EncodeToString(headerJSON) + "." + enc.EncodeToString(payloadJSON)
+
+	mac := hmac.New(sha256.New, jwtSecret)
+	if _, err := mac.Write([]byte(unsigned)); err != nil {
+		return "", err
+	}
+	signature := mac.Sum(nil)
+
+	token := unsigned + "." + enc.EncodeToString(signature)
+	return token, nil
+}
+
+func parseJWT(token string) (string, time.Time, error) {
+	if len(jwtSecret) == 0 {
+		return "", time.Time{}, errors.New("jwt secret not configured")
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", time.Time{}, errors.New("invalid jwt format")
+	}
+
+	enc := base64.RawURLEncoding
+
+	headerBytes, err := enc.DecodeString(parts[0])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt header encoding")
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return "", time.Time{}, errors.New("invalid jwt header")
+	}
+	alg, _ := header["alg"].(string)
+	if alg != "HS256" {
+		return "", time.Time{}, errors.New("unsupported jwt alg")
+	}
+
+	signature, err := enc.DecodeString(parts[2])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt signature encoding")
+	}
+
+	unsigned := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, jwtSecret)
+	if _, err := mac.Write([]byte(unsigned)); err != nil {
+		return "", time.Time{}, err
+	}
+	expectedSig := mac.Sum(nil)
+	if !hmac.Equal(expectedSig, signature) {
+		return "", time.Time{}, errors.New("invalid jwt signature")
+	}
+
+	payloadBytes, err := enc.DecodeString(parts[1])
+	if err != nil {
+		return "", time.Time{}, errors.New("invalid jwt payload encoding")
+	}
+
+	var claims jwtClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return "", time.Time{}, errors.New("invalid jwt claims")
+	}
+
+	if claims.Sub == "" {
+		return "", time.Time{}, errors.New("jwt missing subject")
+	}
+	if claims.Exp == 0 {
+		return "", time.Time{}, errors.New("jwt missing exp")
+	}
+
+	expiresAt := time.Unix(claims.Exp, 0)
+	return claims.Sub, expiresAt, nil
 }
 
 func urlQuery(s string) string {
