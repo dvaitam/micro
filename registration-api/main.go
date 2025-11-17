@@ -1178,6 +1178,9 @@ func handleAPIProfilePhoto(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Optional: expose avatars by email for other users in chat lists.
+// Currently the iOS app uses /api/profile/photo for the current user.
+
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	sess, err := getSessionFromRequest(r)
 	if err != nil {
@@ -1675,6 +1678,72 @@ func publishChatEvent(ctx context.Context, event *chatRedisEvent) error {
 		return err
 	}
 	return redisClient.Publish(ctx, "chat:messages", data).Err()
+}
+
+func handleAPIUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, err := getSessionFromRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	emailsParam := strings.TrimSpace(r.URL.Query().Get("emails"))
+	if emailsParam == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []interface{}{}})
+		return
+	}
+	rawEmails := strings.Split(emailsParam, ",")
+
+	seen := make(map[string]struct{}, len(rawEmails))
+	emails := make([]string, 0, len(rawEmails))
+	for _, e := range rawEmails {
+		email := strings.TrimSpace(e)
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		emails = append(emails, email)
+	}
+
+	type userSummary struct {
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		HasAvatar bool   `json:"has_avatar"`
+	}
+
+	users := make([]userSummary, 0, len(emails))
+	for _, email := range emails {
+		var (
+			name   sql.NullString
+			avatar []byte
+		)
+		err := db.QueryRow(
+			"SELECT name, avatar FROM user_profiles WHERE email = ?",
+			email,
+		).Scan(&name, &avatar)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			log.Printf("load user profile for %s error: %v", email, err)
+			continue
+		}
+		users = append(users, userSummary{
+			Email:     email,
+			Name:      strings.TrimSpace(name.String),
+			HasAvatar: len(avatar) > 0,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
 }
 
 func (m *messageServiceClient) ListConversations(ctx context.Context, email string) ([]conversationView, error) {

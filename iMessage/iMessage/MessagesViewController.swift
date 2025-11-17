@@ -16,6 +16,18 @@ struct Conversation: Decodable {
     }
 }
 
+struct UserProfileSummary: Decodable {
+    let email: String
+    let name: String
+    let hasAvatar: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case email
+        case name
+        case hasAvatar = "has_avatar"
+    }
+}
+
 final class MessagesViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
     private let baseURL = URL(string: "https://chat.manchik.co.uk")!
@@ -23,6 +35,8 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
 
     private let tableView = UITableView(frame: .zero, style: .plain)
     private var conversations: [Conversation] = []
+    private var userProfiles: [String: UserProfileSummary] = [:]
+    private var avatarCache: [String: UIImage] = [:]
     private var hasLoadedConversations = false
 
     override func viewDidLoad() {
@@ -115,6 +129,7 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                 self.conversations = conversations
                 self.loadLastMessagesForConversations()
                 self.tableView.reloadData()
+                self.loadParticipantProfiles()
             }
         }.resume()
     }
@@ -123,6 +138,78 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         for conversation in conversations {
             loadLastMessage(for: conversation)
         }
+    }
+
+    private func loadParticipantProfiles() {
+        guard let currentEmail = SessionManager.shared.email else {
+            return
+        }
+
+        var emailSet = Set<String>()
+        for convo in conversations {
+            for email in convo.participants {
+                let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    continue
+                }
+                // We can still load profile for current user in case we want name/avatar,
+                // but "Me" label is used for display.
+                emailSet.insert(trimmed)
+            }
+        }
+
+        if emailSet.isEmpty {
+            return
+        }
+
+        let emails = Array(emailSet)
+
+        guard var components = URLComponents(url: URL(string: "/api/users", relativeTo: baseURL)!, resolvingAgainstBaseURL: true) else {
+            return
+        }
+        components.queryItems = [
+            URLQueryItem(name: "emails", value: emails.joined(separator: ","))
+        ]
+        guard let url = components.url else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("Failed to load user profiles: \(error)")
+                return
+            }
+            guard let data = data else {
+                return
+            }
+
+            struct UsersResponse: Decodable {
+                let users: [UserProfileSummary]
+            }
+
+            let users: [UserProfileSummary]
+            do {
+                let decoded = try JSONDecoder().decode(UsersResponse.self, from: data)
+                users = decoded.users
+            } catch {
+                print("Failed to decode user profiles: \(error)")
+                return
+            }
+
+            DispatchQueue.main.async {
+                for profile in users {
+                    self.userProfiles[profile.email] = profile
+                }
+                self.tableView.reloadData()
+            }
+        }.resume()
     }
 
     private func loadLastMessage(for conversation: Conversation) {
@@ -295,6 +382,28 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             cell.accessoryView = nil
         }
         cell.accessoryType = .none
+
+        // Configure avatar image for the primary participant in this conversation.
+        if let email = primaryEmail(for: conversation) {
+            if let image = avatarCache[email] {
+                cell.imageView?.image = image
+            } else if let profile = userProfiles[email], profile.hasAvatar {
+                // Start loading avatar if we know one exists.
+                loadAvatar(for: email)
+                cell.imageView?.image = nil
+            } else {
+                cell.imageView?.image = nil
+            }
+        } else {
+            cell.imageView?.image = nil
+        }
+
+        if let imageView = cell.imageView {
+            imageView.layer.cornerRadius = 18
+            imageView.layer.masksToBounds = true
+            imageView.contentMode = .scaleAspectFill
+        }
+
         return cell
     }
 
@@ -313,12 +422,14 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return "Me"
         }
 
-        // One-to-one chat: always show the other participant, regardless of stored name.
-        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
-            return other
+        // One-to-one chat: show the other participant's profile name if available.
+        if participants.count == 2 {
+            if let other = participants.first(where: { $0 != currentEmail }) {
+                return displayName(for: other, currentEmail: currentEmail)
+            }
         }
 
-        // Group or unnamed chats: prefer explicit name, but map your email to "Me" if it appears.
+        // Group or unnamed chats: prefer explicit name.
         if !conversation.name.isEmpty {
             if conversation.name == currentEmail {
                 return "Me"
@@ -327,9 +438,80 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         }
 
         let displayParticipants = participants.map { participant -> String in
-            return participant == currentEmail ? "Me" : participant
+            if participant == currentEmail {
+                return "Me"
+            }
+            return displayName(for: participant, currentEmail: currentEmail)
         }
         return displayParticipants.isEmpty ? "Chat" : displayParticipants.joined(separator: ", ")
+    }
+
+    private func displayName(for email: String, currentEmail: String) -> String {
+        if email == currentEmail {
+            return "Me"
+        }
+        if let profile = userProfiles[email], !profile.name.isEmpty {
+            return profile.name
+        }
+        return email
+    }
+
+    private func primaryEmail(for conversation: Conversation) -> String? {
+        guard let currentEmail = SessionManager.shared.email else {
+            return conversation.participants.first
+        }
+
+        let participants = conversation.participants
+
+        // Self-chat: show own avatar.
+        if participants.count == 1, let first = participants.first, first == currentEmail {
+            return currentEmail
+        }
+
+        // One-to-one chat: avatar is the other participant.
+        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
+            return other
+        }
+
+        // For group chats, we don't show a specific avatar here.
+        return nil
+    }
+
+    private func loadAvatar(for email: String) {
+        // Currently we only support loading the avatar for the
+        // signed-in user via /api/profile/photo.
+        guard let currentEmail = SessionManager.shared.email, email == currentEmail else {
+            return
+        }
+
+        if avatarCache[email] != nil {
+            return
+        }
+        guard let url = URL(string: "/api/profile/photo", relativeTo: baseURL) else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        if let token = SessionManager.shared.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                print("Failed to load avatar for \(email): \(error)")
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+                  let data = data, let image = UIImage(data: data) else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.avatarCache[email] = image
+                self.tableView.reloadData()
+            }
+        }.resume()
     }
 
     // MARK: UITableViewDelegate
