@@ -422,11 +422,22 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return "Me"
         }
 
-        // One-to-one chat: show the other participant's profile name if available.
-        if participants.count == 2 {
-            if let other = participants.first(where: { $0 != currentEmail }) {
-                return displayName(for: other, currentEmail: currentEmail)
+        // One-to-one chat: decide based on conversation.name when set.
+        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
+            if !conversation.name.isEmpty {
+                // If the name matches the current user, show "Me".
+                if conversation.name == currentEmail {
+                    return "Me"
+                }
+                // If the name matches the other participant, show their display name.
+                if conversation.name == other {
+                    return displayName(for: other, currentEmail: currentEmail)
+                }
+                // Otherwise, treat name as a custom title.
+                return conversation.name
             }
+            // No explicit name; show the other participant's display name.
+            return displayName(for: other, currentEmail: currentEmail)
         }
 
         // Group or unnamed chats: prefer explicit name.
@@ -478,16 +489,15 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     private func loadAvatar(for email: String) {
-        // Currently we only support loading the avatar for the
-        // signed-in user via /api/profile/photo.
-        guard let currentEmail = SessionManager.shared.email, email == currentEmail else {
-            return
-        }
-
         if avatarCache[email] != nil {
             return
         }
-        guard let url = URL(string: "/api/profile/photo", relativeTo: baseURL) else {
+
+        guard var components = URLComponents(url: URL(string: "/api/users/photo", relativeTo: baseURL)!, resolvingAgainstBaseURL: true) else {
+            return
+        }
+        components.queryItems = [URLQueryItem(name: "email", value: email)]
+        guard let url = components.url else {
             return
         }
 

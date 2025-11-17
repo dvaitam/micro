@@ -657,6 +657,7 @@ func main() {
 	mux.HandleFunc("/api/users", handleAPIUsers)
 	mux.HandleFunc("/api/profile", handleAPIProfile)
 	mux.HandleFunc("/api/profile/photo", handleAPIProfilePhoto)
+	mux.HandleFunc("/api/users/photo", handleAPIUserPhoto)
 
 	fmt.Println("Registration API running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -1179,8 +1180,53 @@ func handleAPIProfilePhoto(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Optional: expose avatars by email for other users in chat lists.
-// Currently the iOS app uses /api/profile/photo for the current user.
+func handleAPIUserPhoto(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, err := getSessionFromRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	email := strings.TrimSpace(r.URL.Query().Get("email"))
+	if email == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	var (
+		data        []byte
+		contentType sql.NullString
+	)
+
+	err := db.QueryRow(
+		"SELECT avatar, avatar_content_type FROM user_profiles WHERE email = ?",
+		email,
+	).Scan(&data, &contentType)
+	if errors.Is(err, sql.ErrNoRows) || len(data) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("load avatar for %s error: %v", email, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load avatar"})
+		return
+	}
+
+	ct := strings.TrimSpace(contentType.String)
+	if ct == "" {
+		ct = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		log.Printf("write avatar for %s error: %v", email, err)
+	}
+}
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	sess, err := getSessionFromRequest(r)
