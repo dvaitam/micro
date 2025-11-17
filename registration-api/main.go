@@ -131,7 +131,12 @@ const chatTpl = `
             <div class="panel">
                 <h3>Start Chat</h3>
                 <p class="hint">Select one or more users to begin a chat.</p>
+                <input type="text" id="userSearch" placeholder="Search users…" style="padding: 6px; font-size: 0.9rem;">
                 <ul id="users"></ul>
+                <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px;">
+                    <input type="text" id="groupName" placeholder="Group name (optional)" style="padding: 6px; font-size: 0.9rem;">
+                    <input type="file" id="groupPhoto" accept="image/*" style="font-size: 0.85rem;">
+                </div>
                 <button type="button" id="createChatBtn">Create Chat</button>
             </div>
         </aside>
@@ -168,6 +173,9 @@ const chatTpl = `
     const form = document.getElementById('messageForm');
     const messageInput = document.getElementById('message');
     const sendButton = document.getElementById('sendButton');
+    const userSearchEl = document.getElementById('userSearch');
+    const groupNameEl = document.getElementById('groupName');
+    const groupPhotoEl = document.getElementById('groupPhoto');
     const createChatBtn = document.getElementById('createChatBtn');
 
     const conversations = new Map();
@@ -477,13 +485,12 @@ const chatTpl = `
         createChatBtn.disabled = true;
         try {
             let name = '';
-            if (selected.length > 1) {
-                const suggested = 'Group chat (' + (selected.length + 1) + ' participants)';
-                const response = prompt('Enter a name for the group chat', suggested);
-                if (response !== null) {
-                    name = response.trim();
-                }
+            if (groupNameEl && groupNameEl.value && groupNameEl.value.trim()) {
+                name = groupNameEl.value.trim();
+            } else if (selected.length > 1) {
+                name = 'Group chat (' + (selected.length + 1) + ' participants)';
             }
+
             const payload = {
                 name: name,
                 participants: selected
@@ -502,9 +509,35 @@ const chatTpl = `
             upsertConversation(conversation);
             renderConversations();
             messagesByConversation.set(conversation.id, []);
+
+            // If a group photo is selected, upload it.
+            if (groupPhotoEl && groupPhotoEl.files && groupPhotoEl.files[0]) {
+                const file = groupPhotoEl.files[0];
+                try {
+                    const photoRes = await fetch('/api/conversations/' + encodeURIComponent(conversation.id) + '/photo', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': file.type || 'image/jpeg'
+                        },
+                        body: file
+                    });
+                    if (!photoRes.ok) {
+                        console.error('Group photo upload failed with status', photoRes.status);
+                    }
+                } catch (err) {
+                    console.error('Group photo upload failed', err);
+                }
+            }
+
             await selectConversation(conversation.id);
             announceConversation(conversation.id);
             Array.from(usersEl.querySelectorAll('input[type="checkbox"]')).forEach((cb) => { cb.checked = false; });
+            if (groupNameEl) {
+                groupNameEl.value = '';
+            }
+            if (groupPhotoEl) {
+                groupPhotoEl.value = '';
+            }
         } catch (err) {
             addSystemNote(err.message || 'Unable to create chat.');
         } finally {
@@ -534,6 +567,13 @@ const chatTpl = `
         socket.send(JSON.stringify(payload));
         messageInput.value = '';
     });
+
+    if (userSearchEl) {
+        userSearchEl.addEventListener('input', () => {
+            const q = userSearchEl.value || '';
+            loadAllUsers(q);
+        });
+    }
 
     if (!token) {
         statusEl.textContent = 'Missing session token. Please sign in again.';
