@@ -654,6 +654,7 @@ func main() {
 	mux.HandleFunc("/api/device", handleRegisterDevice)
 	mux.HandleFunc("/api/device/associate", handleAssociateDevice)
 	mux.HandleFunc("/api/session", handleAPISession)
+	mux.HandleFunc("/api/users", handleAPIUsers)
 	mux.HandleFunc("/api/profile", handleAPIProfile)
 	mux.HandleFunc("/api/profile/photo", handleAPIProfilePhoto)
 
