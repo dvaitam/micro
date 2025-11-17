@@ -30,7 +30,7 @@ struct UserProfileSummary: Decodable {
     }
 }
 
-final class MessagesViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class MessagesViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, StartChatViewControllerDelegate {
 
     private let baseURL = URL(string: "https://chat.manchik.co.uk")!
     private let urlSession = URLSession.shared
@@ -264,21 +264,11 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     @objc private func didTapNewChat() {
-        let alert = UIAlertController(title: "New Chat", message: "Enter recipient email", preferredStyle: .alert)
-        alert.addTextField { textField in
-            textField.placeholder = "email@example.com"
-            textField.keyboardType = .emailAddress
-            textField.autocapitalizationType = .none
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
-        alert.addAction(UIAlertAction(title: "Start", style: .default, handler: { [weak self] _ in
-            guard let self = self else { return }
-            guard let email = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty else {
-                return
-            }
-            self.createConversation(with: email)
-        }))
-        present(alert, animated: true, completion: nil)
+        let controller = StartChatViewController(baseURL: baseURL, urlSession: urlSession)
+        controller.delegate = self
+        let nav = UINavigationController(rootViewController: controller)
+        nav.modalPresentationStyle = .formSheet
+        present(nav, animated: true, completion: nil)
     }
 
     private func createConversation(with participantEmail: String) {
@@ -340,6 +330,19 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(conversation: conversation, baseURL: baseURL, urlSession: urlSession)
         navigationController?.pushViewController(controller, animated: true)
+    }
+
+    // MARK: StartChatViewControllerDelegate
+
+    func startChatViewController(_ controller: StartChatViewController, didCreate conversation: Conversation) {
+        var updatedConversation = conversation
+        updatedConversation.unreadCount = 0
+        if let email = SessionManager.shared.email {
+            ConversationUnreadStore.shared.setUnreadCount(0, for: conversation.id, email: email)
+        }
+        conversations.insert(updatedConversation, at: 0)
+        tableView.reloadData()
+        showConversation(updatedConversation)
     }
 
     // MARK: UITableViewDataSource

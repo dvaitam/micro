@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"io"
 	"log"
@@ -19,7 +20,7 @@ func handleAPIConversationPhoto(w http.ResponseWriter, r *http.Request, conversa
 	switch r.Method {
 	case http.MethodGet:
 		// Anyone in the conversation can view the photo.
-		conv, err := loadConversationForUser(r, conversationID, sess.Email)
+		conv, err := loadConversationForUser(w, r, conversationID, sess.Email)
 		if err != nil {
 			return
 		}
@@ -56,7 +57,7 @@ func handleAPIConversationPhoto(w http.ResponseWriter, r *http.Request, conversa
 
 	case http.MethodPost:
 		// Only participants may update the conversation photo.
-		conv, err := loadConversationForUser(r, conversationID, sess.Email)
+		conv, err := loadConversationForUser(w, r, conversationID, sess.Email)
 		if err != nil {
 			return
 		}
@@ -100,4 +101,3 @@ func handleAPIConversationPhoto(w http.ResponseWriter, r *http.Request, conversa
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
-

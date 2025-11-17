@@ -1808,7 +1808,7 @@ func newMessageServiceClient(baseURL string) *messageServiceClient {
 
 // loadConversationForUser reuses the existing APIConversation logic to
 // ensure the current user is allowed to access the conversation.
-func loadConversationForUser(r *http.Request, conversationID, email string) (*conversationView, error) {
+func loadConversationForUser(w http.ResponseWriter, r *http.Request, conversationID, email string) (*conversationSummary, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
