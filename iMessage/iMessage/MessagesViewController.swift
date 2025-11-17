@@ -317,7 +317,8 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                            let name = conversationDict["name"] as? String,
                            let participants = conversationDict["participants"] as? [String],
                            let lastActivityAt = conversationDict["last_activity_at"] as? String {
-                            var conversation = Conversation(id: id, name: name, participants: participants, lastActivityAt: lastActivityAt)
+                            let isGroup = (conversationDict["is_group"] as? Bool) ?? false
+                            var conversation = Conversation(id: id, name: name, participants: participants, lastActivityAt: lastActivityAt, isGroup: isGroup)
                             conversation.unreadCount = 0
                             if let email = SessionManager.shared.email {
                                 ConversationUnreadStore.shared.setUnreadCount(0, for: id, email: email)
@@ -555,7 +556,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         } else {
             let name = event.conversationName ?? "Chat"
             let sentAt = event.sentAt ?? ""
-            var convo = Conversation(id: conversationID, name: name, participants: [], lastActivityAt: sentAt)
+            let participants = event.participants ?? []
+            let isGroup = participants.count > 2
+            var convo = Conversation(id: conversationID, name: name, participants: participants, lastActivityAt: sentAt, isGroup: isGroup)
             convo.lastMessagePreview = event.text
             if let activeID = ChatViewController.activeConversationID, activeID == conversationID {
                 convo.unreadCount = 0

@@ -655,6 +655,7 @@ func main() {
 	mux.HandleFunc("/api/device/associate", handleAssociateDevice)
 	mux.HandleFunc("/api/session", handleAPISession)
 	mux.HandleFunc("/api/users", handleAPIUsers)
+	mux.HandleFunc("/api/users/all", handleAPIUsersAll)
 	mux.HandleFunc("/api/profile", handleAPIProfile)
 	mux.HandleFunc("/api/profile/photo", handleAPIProfilePhoto)
 	mux.HandleFunc("/api/users/photo", handleAPIUserPhoto)
@@ -713,6 +714,18 @@ func ensureSchema() error {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `
 	if _, err := db.Exec(createProfiles); err != nil {
+		return err
+	}
+
+	createConversationAvatars := `
+        CREATE TABLE IF NOT EXISTS conversation_avatars (
+            conversation_id VARCHAR(64) NOT NULL PRIMARY KEY,
+            avatar LONGBLOB NULL,
+            avatar_content_type VARCHAR(64) DEFAULT NULL,
+            updated_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `
+	if _, err := db.Exec(createConversationAvatars); err != nil {
 		return err
 	}
 
@@ -1228,6 +1241,77 @@ func handleAPIUserPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleAPIUsersAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, err := getSessionFromRequest(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	like := "%" + q + "%"
+
+	query := `
+        SELECT s.email, COALESCE(p.name, ''), p.avatar
+        FROM sessions s
+        LEFT JOIN user_profiles p ON p.email = s.email
+        GROUP BY s.email, p.name, p.avatar
+    `
+	args := []interface{}{}
+	if q != "" {
+		query = `
+            SELECT s.email, COALESCE(p.name, ''), p.avatar
+            FROM sessions s
+            LEFT JOIN user_profiles p ON p.email = s.email
+            WHERE s.email LIKE ? OR p.name LIKE ?
+            GROUP BY s.email, p.name, p.avatar
+        `
+		args = append(args, like, like)
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("list users error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load users"})
+		return
+	}
+	defer rows.Close()
+
+	type userSummary struct {
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		HasAvatar bool   `json:"has_avatar"`
+	}
+
+	users := make([]userSummary, 0, 64)
+	for rows.Next() {
+		var (
+			email string
+			name  string
+			avatar []byte
+		)
+		if err := rows.Scan(&email, &name, &avatar); err != nil {
+			log.Printf("scan users error: %v", err)
+			continue
+		}
+		users = append(users, userSummary{
+			Email:     email,
+			Name:      strings.TrimSpace(name),
+			HasAvatar: len(avatar) > 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("iterate users error: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+}
+
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	sess, err := getSessionFromRequest(r)
 	if err != nil {
@@ -1312,6 +1396,11 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 	conversationID := parts[0]
 	if conversationID == "" {
 		http.NotFound(w, r)
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "photo" {
+		handleAPIConversationPhoto(w, r, conversationID)
 		return
 	}
 	if len(parts) == 1 {
@@ -1715,6 +1804,29 @@ func newMessageServiceClient(baseURL string) *messageServiceClient {
 			Timeout: 5 * time.Second,
 		},
 	}
+}
+
+// loadConversationForUser reuses the existing APIConversation logic to
+// ensure the current user is allowed to access the conversation.
+func loadConversationForUser(r *http.Request, conversationID, email string) (*conversationView, error) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	conv, err := messageSvc.GetConversation(ctx, conversationID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			http.NotFound(w, r)
+			return nil, err
+		}
+		log.Printf("conversation lookup error: %v", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to load conversation"})
+		return nil, err
+	}
+	if !contains(conv.Participants, email) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return nil, errors.New("forbidden")
+	}
+	return conv, nil
 }
 
 func publishChatEvent(ctx context.Context, event *chatRedisEvent) error {

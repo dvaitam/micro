@@ -7,6 +7,7 @@ struct ChatSocketEvent: Decodable {
     let from: String?
     let text: String?
     let sentAt: String?
+    let participants: [String]?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -15,6 +16,7 @@ struct ChatSocketEvent: Decodable {
         case from
         case text
         case sentAt = "sent_at"
+        case participants
     }
 }
 
