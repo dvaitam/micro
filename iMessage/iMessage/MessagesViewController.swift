@@ -102,7 +102,17 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             }
 
             DispatchQueue.main.async {
-                self.conversations = decodedConversations
+                var conversations = decodedConversations
+
+                if let currentEmail = SessionManager.shared.email {
+                    for index in conversations.indices {
+                        let id = conversations[index].id
+                        let storedCount = ConversationUnreadStore.shared.unreadCount(for: id, email: currentEmail)
+                        conversations[index].unreadCount = storedCount
+                    }
+                }
+
+                self.conversations = conversations
                 self.loadLastMessagesForConversations()
                 self.tableView.reloadData()
             }
@@ -116,7 +126,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     private func loadLastMessage(for conversation: Conversation) {
-        guard let url = URL(string: "/api/conversations/\(conversation.id)/messages?limit=1", relativeTo: baseURL) else {
+        // Fetch a limited window of recent messages so we can
+        // determine the latest preview.
+        guard let url = URL(string: "/api/conversations/\(conversation.id)/messages?limit=50", relativeTo: baseURL) else {
             return
         }
 
@@ -140,16 +152,16 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                 let messages: [ChatMessage]
             }
 
-            let lastMessage: ChatMessage?
+            let messages: [ChatMessage]
             do {
                 let decoded = try JSONDecoder().decode(Response.self, from: data)
-                lastMessage = decoded.messages.last
+                messages = decoded.messages
             } catch {
                 print("Failed to decode last message: \(error)")
                 return
             }
 
-            guard let last = lastMessage else {
+            guard let last = messages.last else {
                 return
             }
 
@@ -218,6 +230,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                            let lastActivityAt = conversationDict["last_activity_at"] as? String {
                             var conversation = Conversation(id: id, name: name, participants: participants, lastActivityAt: lastActivityAt)
                             conversation.unreadCount = 0
+                            if let email = SessionManager.shared.email {
+                                ConversationUnreadStore.shared.setUnreadCount(0, for: id, email: email)
+                            }
                             self.conversations.insert(conversation, at: 0)
                             self.tableView.reloadData()
                             self.showConversation(conversation)
@@ -248,36 +263,73 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ??
             UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
         let conversation = conversations[indexPath.row]
-        if let currentEmail = SessionManager.shared.email {
-            if !conversation.name.isEmpty {
-                // If the stored name is exactly the current user, show "Me".
-                cell.textLabel?.text = (conversation.name == currentEmail) ? "Me" : conversation.name
-            } else {
-                let displayParticipants = conversation.participants.map { participant -> String in
-                    return participant == currentEmail ? "Me" : participant
-                }
-                cell.textLabel?.text = displayParticipants.isEmpty ? "Chat" : displayParticipants.joined(separator: ", ")
-            }
-        } else {
-            cell.textLabel?.text = conversation.name.isEmpty
-                ? (conversation.participants.isEmpty ? "Chat" : conversation.participants.joined(separator: ", "))
-                : conversation.name
-        }
+        cell.textLabel?.text = title(for: conversation)
 
         if conversation.unreadCount > 0 {
-            if let preview = conversation.lastMessagePreview, !preview.isEmpty {
-                cell.detailTextLabel?.text = "\(preview)   • Unread: \(conversation.unreadCount)"
-            } else {
-                cell.detailTextLabel?.text = "Unread: \(conversation.unreadCount)"
-            }
-            cell.detailTextLabel?.textColor = .systemBlue
-            cell.accessoryType = .disclosureIndicator
+            // Show latest message preview only.
+            cell.detailTextLabel?.text = conversation.lastMessagePreview
+            cell.detailTextLabel?.textColor = .secondaryLabel
+            cell.textLabel?.font = UIFont.systemFont(ofSize: UIFont.labelFontSize, weight: .semibold)
+
+            // Configure unread count badge as a green pill with white text.
+            let badgeLabel = UILabel()
+            badgeLabel.text = "\(conversation.unreadCount)"
+            badgeLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+            badgeLabel.textColor = .white
+            badgeLabel.textAlignment = .center
+            badgeLabel.backgroundColor = .systemGreen
+            badgeLabel.layer.masksToBounds = true
+
+            let padding: CGFloat = 14
+            let textSize = (badgeLabel.text ?? "").size(withAttributes: [.font: badgeLabel.font as Any])
+            let height: CGFloat = 22
+            let width = max(height, textSize.width + padding)
+            badgeLabel.frame = CGRect(x: 0, y: 0, width: width, height: height)
+            badgeLabel.layer.cornerRadius = height / 2
+
+            cell.accessoryView = badgeLabel
         } else {
             cell.detailTextLabel?.text = conversation.lastMessagePreview
-            cell.accessoryType = .disclosureIndicator
+            cell.detailTextLabel?.textColor = .secondaryLabel
+            cell.textLabel?.font = UIFont.systemFont(ofSize: UIFont.labelFontSize, weight: .regular)
+            cell.accessoryView = nil
         }
-        cell.accessoryType = .disclosureIndicator
+        cell.accessoryType = .none
         return cell
+    }
+
+    private func title(for conversation: Conversation) -> String {
+        guard let currentEmail = SessionManager.shared.email else {
+            if !conversation.name.isEmpty {
+                return conversation.name
+            }
+            return conversation.participants.isEmpty ? "Chat" : conversation.participants.joined(separator: ", ")
+        }
+
+        let participants = conversation.participants
+
+        // Self-chat: only you in the participants list.
+        if participants.count == 1, let first = participants.first, first == currentEmail {
+            return "Me"
+        }
+
+        // One-to-one chat: always show the other participant, regardless of stored name.
+        if participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
+            return other
+        }
+
+        // Group or unnamed chats: prefer explicit name, but map your email to "Me" if it appears.
+        if !conversation.name.isEmpty {
+            if conversation.name == currentEmail {
+                return "Me"
+            }
+            return conversation.name
+        }
+
+        let displayParticipants = participants.map { participant -> String in
+            return participant == currentEmail ? "Me" : participant
+        }
+        return displayParticipants.isEmpty ? "Chat" : displayParticipants.joined(separator: ", ")
     }
 
     // MARK: UITableViewDelegate
@@ -298,6 +350,8 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
             return
         }
 
+        let currentEmail = SessionManager.shared.email
+
         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
             var convo = conversations.remove(at: index)
             if let sentAt = event.sentAt {
@@ -312,6 +366,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                 // Conversation currently open; don't increment unread.
             } else {
                 convo.unreadCount += 1
+                if let email = currentEmail {
+                    ConversationUnreadStore.shared.setUnreadCount(convo.unreadCount, for: convo.id, email: email)
+                }
             }
 
             conversations.insert(convo, at: 0)
@@ -324,6 +381,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
                 convo.unreadCount = 0
             } else {
                 convo.unreadCount = 1
+                if let email = currentEmail {
+                    ConversationUnreadStore.shared.setUnreadCount(convo.unreadCount, for: convo.id, email: email)
+                }
             }
             conversations.insert(convo, at: 0)
         }
@@ -337,6 +397,9 @@ final class MessagesViewController: UIViewController, UITableViewDataSource, UIT
         }
         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
             conversations[index].unreadCount = 0
+            if let email = SessionManager.shared.email {
+                ConversationUnreadStore.shared.setUnreadCount(0, for: conversationID, email: email)
+            }
             tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
         }
     }

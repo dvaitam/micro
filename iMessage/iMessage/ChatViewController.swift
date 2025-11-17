@@ -28,6 +28,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var inputBottomConstraint: NSLayoutConstraint?
 
     private var messages: [ChatMessage] = []
+    private var hasAppeared = false
 
     init(conversation: Conversation, baseURL: URL, urlSession: URLSession = .shared) {
         self.conversation = conversation
@@ -55,6 +56,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ChatViewController.activeConversationID = conversation.id
         NotificationCenter.default.post(name: .chatConversationRead, object: nil, userInfo: ["conversationID": conversation.id])
         ChatWebSocketManager.shared.connectIfNeeded()
+        hasAppeared = true
+        updateReadStateIfNeeded()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -185,6 +188,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.messages = decodedMessages
                 self.tableView.reloadData()
                 self.scrollToBottom(animated: false)
+                self.updateReadStateIfNeeded()
             }
         }.resume()
     }
@@ -241,7 +245,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 }
 
                 if let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) {
-                    self.messages.append(decoded.message)
+                    let newMessage = decoded.message
+
+                    if let last = self.messages.last,
+                       last.sender == newMessage.sender,
+                       last.text == newMessage.text,
+                       last.sentAt == newMessage.sentAt {
+                        // Already added via WebSocket; skip duplicate.
+                        return
+                    }
+
+                    self.messages.append(newMessage)
                     let indexPath = IndexPath(row: self.messages.count - 1, section: 0)
                     self.tableView.insertRows(at: [indexPath], with: .none)
                     self.scrollToBottom(animated: true)
@@ -295,11 +309,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let indexPath = IndexPath(row: messages.count - 1, section: 0)
         tableView.insertRows(at: [indexPath], with: .automatic)
         scrollToBottom(animated: true)
+        updateReadStateIfNeeded()
     }
 
     private func scrollToBottom(animated: Bool) {
         guard !messages.isEmpty else { return }
         let indexPath = IndexPath(row: messages.count - 1, section: 0)
         tableView.scrollToRow(at: indexPath, at: .bottom, animated: animated)
+    }
+
+    private func updateReadStateIfNeeded() {
+        guard hasAppeared else { return }
+        guard let currentEmail = SessionManager.shared.email else { return }
+        guard let last = messages.last else { return }
+        guard let date = ConversationReadStore.shared.parseTimestamp(last.sentAt) else { return }
+
+        ConversationReadStore.shared.updateLastReadDate(date, for: conversation.id, email: currentEmail)
     }
 }

@@ -295,8 +295,22 @@ class ViewController: UIViewController {
 
     private func showMessages() {
         let messagesVC = MessagesViewController()
-        let nav = UINavigationController(rootViewController: messagesVC)
-        nav.modalPresentationStyle = .fullScreen
-        present(nav, animated: true, completion: nil)
+        let messagesNav = UINavigationController(rootViewController: messagesVC)
+        messagesNav.tabBarItem = UITabBarItem(title: "Messages", image: UIImage(systemName: "message"), tag: 1)
+
+        let callsVC = CallsViewController()
+        let callsNav = UINavigationController(rootViewController: callsVC)
+        callsNav.tabBarItem = UITabBarItem(title: "Calls", image: UIImage(systemName: "phone"), tag: 0)
+
+        let profileVC = ProfileViewController()
+        let profileNav = UINavigationController(rootViewController: profileVC)
+        profileNav.tabBarItem = UITabBarItem(title: "Profile", image: UIImage(systemName: "person.circle"), tag: 2)
+
+        let tabBarController = UITabBarController()
+        tabBarController.viewControllers = [callsNav, messagesNav, profileNav]
+        tabBarController.selectedIndex = 1
+        tabBarController.modalPresentationStyle = .fullScreen
+
+        present(tabBarController, animated: true, completion: nil)
     }
 }

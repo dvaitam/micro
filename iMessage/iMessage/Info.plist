@@ -25,5 +25,7 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow access to choose a profile picture.</string>
 </dict>
 </plist>

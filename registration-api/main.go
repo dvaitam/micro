@@ -654,6 +654,8 @@ func main() {
 	mux.HandleFunc("/api/device", handleRegisterDevice)
 	mux.HandleFunc("/api/device/associate", handleAssociateDevice)
 	mux.HandleFunc("/api/session", handleAPISession)
+	mux.HandleFunc("/api/profile", handleAPIProfile)
+	mux.HandleFunc("/api/profile/photo", handleAPIProfilePhoto)
 
 	fmt.Println("Registration API running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -696,6 +698,19 @@ func ensureSchema() error {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `
 	if _, err := db.Exec(createDeviceTokens); err != nil {
+		return err
+	}
+
+	createProfiles := `
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            email VARCHAR(255) NOT NULL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL DEFAULT '',
+            avatar LONGBLOB NULL,
+            avatar_content_type VARCHAR(64) DEFAULT NULL,
+            updated_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `
+	if _, err := db.Exec(createProfiles); err != nil {
 		return err
 	}
 
@@ -1012,6 +1027,155 @@ func handleAPIVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		"token_type":    "Bearer",
 		"expires_in":    expiresIn,
 	})
+}
+
+func handleAPIProfile(w http.ResponseWriter, r *http.Request) {
+	sess, err := getSessionFromRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		var (
+			name              string
+			avatarContentType sql.NullString
+		)
+
+		err := db.QueryRow(
+			"SELECT name, avatar_content_type FROM user_profiles WHERE email = ?",
+			sess.Email,
+		).Scan(&name, &avatarContentType)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"email": sess.Email,
+				"name":  "",
+			})
+			return
+		}
+		if err != nil {
+			log.Printf("load profile error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load profile"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"email": sess.Email,
+			"name":  name,
+		})
+
+	case http.MethodPost:
+		defer r.Body.Close()
+		var payload struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+
+		name := strings.TrimSpace(payload.Name)
+		now := time.Now()
+
+		_, err := db.Exec(`
+            INSERT INTO user_profiles (email, name, updated_at)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE name = VALUES(name), updated_at = VALUES(updated_at)
+        `, sess.Email, name, now)
+		if err != nil {
+			log.Printf("upsert profile error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to save profile"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"email": sess.Email,
+			"name":  name,
+		})
+
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleAPIProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	sess, err := getSessionFromRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		var (
+			data           []byte
+			contentType    sql.NullString
+			name           sql.NullString
+			lastUpdated    time.Time
+		)
+
+		err := db.QueryRow(
+			"SELECT avatar, avatar_content_type, name, updated_at FROM user_profiles WHERE email = ?",
+			sess.Email,
+		).Scan(&data, &contentType, &name, &lastUpdated)
+		if errors.Is(err, sql.ErrNoRows) || len(data) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("load avatar error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load avatar"})
+			return
+		}
+
+		ct := contentType.String
+		if ct == "" {
+			ct = "image/jpeg"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(data); err != nil {
+			log.Printf("write avatar error: %v", err)
+		}
+
+	case http.MethodPost:
+		defer r.Body.Close()
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, 5*1024*1024))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to read body"})
+			return
+		}
+		if len(body) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty body"})
+			return
+		}
+
+		contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
+		if contentType == "" {
+			contentType = "image/jpeg"
+		}
+
+		now := time.Now()
+		_, err = db.Exec(`
+            INSERT INTO user_profiles (email, avatar, avatar_content_type, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE avatar = VALUES(avatar), avatar_content_type = VALUES(avatar_content_type), updated_at = VALUES(updated_at)
+        `, sess.Email, body, contentType, now)
+		if err != nil {
+			log.Printf("update avatar error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to save avatar"})
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
