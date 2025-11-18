@@ -1,47 +1,27 @@
 import UIKit
-import WebRTC
 
 final class CallsViewController: UIViewController {
 
-    private var remoteVideoView: RTCMTLVideoView?
-    private var remoteVideoTrack: RTCVideoTrack?
-
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Call"
-        view.backgroundColor = .black
+        title = "Calls"
+        view.backgroundColor = .systemBackground
 
-        let videoView = RTCMTLVideoView(frame: .zero)
-        videoView.translatesAutoresizingMaskIntoConstraints = false
-        videoView.videoContentMode = .scaleAspectFill
-        view.addSubview(videoView)
-        remoteVideoView = videoView
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "Recent calls will appear here."
+        label.textColor = .secondaryLabel
+        label.textAlignment = .center
+        label.numberOfLines = 0
+
+        view.addSubview(label)
 
         NSLayoutConstraint.activate([
-            videoView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            videoView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            videoView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            videoView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20)
         ])
-
-        RTCClient.shared.setRemoteVideoTrackHandler { [weak self] track in
-            DispatchQueue.main.async {
-                guard let self = self, let renderer = self.remoteVideoView else { return }
-                self.remoteVideoTrack?.remove(renderer)
-                self.remoteVideoTrack = track
-                track.add(renderer)
-            }
-        }
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        RTCClient.shared.startLocalVideoIfNeeded()
-    }
-
-    deinit {
-        if let renderer = remoteVideoView {
-            remoteVideoTrack?.remove(renderer)
-        }
     }
 }
+

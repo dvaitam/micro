@@ -43,12 +43,70 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = conversation.name.isEmpty ? conversation.participants.joined(separator: ", ") : conversation.name
+        title = resolvedTitle()
         view.backgroundColor = .systemBackground
+        if !conversation.isGroup, conversation.participants.count == 2 {
+            let callButton = UIBarButtonItem(image: UIImage(systemName: "video"), style: .plain, target: self, action: #selector(startCallTapped))
+            navigationItem.rightBarButtonItem = callButton
+        }
         setupUI()
         loadMessages()
         registerForKeyboardNotifications()
         NotificationCenter.default.addObserver(self, selector: #selector(handleIncomingMessage(_:)), name: .chatMessageReceived, object: nil)
+    }
+
+    private func resolvedTitle() -> String {
+        guard let currentEmail = SessionManager.shared.email else {
+            if !conversation.name.isEmpty {
+                return conversation.name
+            }
+            return conversation.participants.isEmpty ? "Chat" : conversation.participants.joined(separator: ", ")
+        }
+
+        let participants = conversation.participants
+
+        if participants.count == 1, let first = participants.first, first == currentEmail {
+            return "Me"
+        }
+
+        if !conversation.isGroup, participants.count == 2, let other = participants.first(where: { $0 != currentEmail }) {
+            return other
+        }
+
+        if !conversation.name.isEmpty {
+            return conversation.name
+        }
+
+        let displayParticipants = participants.map { participant -> String in
+            if participant == currentEmail {
+                return "Me"
+            }
+            return participant
+        }
+        return displayParticipants.isEmpty ? "Chat" : displayParticipants.joined(separator: ", ")
+    }
+
+    @objc private func startCallTapped() {
+        guard !conversation.isGroup, conversation.participants.count == 2 else {
+            return
+        }
+        guard let currentEmail = SessionManager.shared.email else {
+            return
+        }
+        let peerEmail = conversation.participants.first(where: { $0 != currentEmail }) ?? conversation.participants.first ?? ""
+        let vc = VideoCallViewController(conversationID: conversation.id, peerEmail: peerEmail, mode: .outgoing)
+        vc.modalPresentationStyle = .fullScreen
+        present(vc, animated: true, completion: {
+            RTCClient.shared.startOutgoingCall(conversationID: self.conversation.id, peerEmail: peerEmail) { result in
+                switch result {
+                case .success(let sessionID):
+                    print("Outgoing call session created: \(sessionID)")
+                case .failure(let error):
+                    print("Failed to start outgoing call: \(error)")
+                    vc.dismiss(animated: true, completion: nil)
+                }
+            }
+        })
     }
 
     override func viewDidAppear(_ animated: Bool) {

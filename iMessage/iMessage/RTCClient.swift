@@ -285,7 +285,23 @@ final class RTCClient: NSObject {
             case .failure(let error):
                 print("RTCClient: candidate poll failed: \(error)")
             case .success(let response):
+                self.updateSessionState(from: response.session)
                 self.applyRemoteCandidates(from: response.session, for: participant)
+            }
+        }
+    }
+
+    private func updateSessionState(from session: Session) {
+        guard let pc = peerConnection else { return }
+        if pc.remoteDescription == nil, let answer = session.answer {
+            let sanitized = sanitizeSDP(answer.sdp)
+            let remoteDescription = RTCSessionDescription(type: .answer, sdp: sanitized)
+            pc.setRemoteDescription(remoteDescription) { error in
+                if let error = error {
+                    print("RTCClient: failed to set remote answer: \(error)")
+                } else {
+                    print("RTCClient: remote answer applied")
+                }
             }
         }
     }
@@ -395,6 +411,123 @@ final class RTCClient: NSObject {
         var request = URLRequest(url: rtcBaseURL.appendingPathComponent("/sessions/\(sessionID)"))
         request.httpMethod = "DELETE"
         urlSession.dataTask(with: request).resume()
+    }
+
+    func startOutgoingCall(conversationID: String, peerEmail: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let email = SessionManager.shared.email else {
+            completion(.failure(NSError(domain: "RTCClient", code: 20, userInfo: [NSLocalizedDescriptionKey: "Missing current user email"])))
+            return
+        }
+
+        configureAudioSession()
+
+        var request = URLRequest(url: rtcBaseURL.appendingPathComponent("/sessions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        struct CreatePayload: Encodable {
+            let conversation_id: String
+            let initiator: String
+        }
+        let payload = CreatePayload(conversation_id: conversationID, initiator: email)
+
+        do {
+            request.httpBody = try JSONEncoder().encode(payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        urlSession.dataTask(with: request) { [weak self] data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            guard let self = self else {
+                completion(.failure(NSError(domain: "RTCClient", code: 21, userInfo: [NSLocalizedDescriptionKey: "RTCClient deallocated"])))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode), let data = data else {
+                completion(.failure(NSError(domain: "RTCClient", code: 22, userInfo: [NSLocalizedDescriptionKey: "Invalid session create response"])))
+                return
+            }
+            do {
+                let response = try JSONDecoder().decode(SessionResponse.self, from: data)
+                DispatchQueue.main.async {
+                    self.handleOutgoingSessionCreated(response: response, initiator: email, peerEmail: peerEmail, completion: completion)
+                }
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+
+    private func handleOutgoingSessionCreated(response: SessionResponse, initiator: String, peerEmail: String, completion: @escaping (Result<String, Error>) -> Void) {
+        do {
+            let pc = try makePeerConnection(turn: response.turn, email: initiator)
+            peerConnection = pc
+            activeSessionID = response.session.id
+            activeConversationID = response.session.conversationID
+            beginCandidatePolling()
+            startLocalVideoIfNeeded()
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        Task { @MainActor in
+            do {
+                guard let pc = peerConnection else {
+                    throw NSError(domain: "RTCClient", code: 23, userInfo: [NSLocalizedDescriptionKey: "Peer connection missing"])
+                }
+                let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: ["OfferToReceiveAudio": "true", "OfferToReceiveVideo": "true"])
+                let offer = try await pc.offer(for: constraints)
+                try await pc.setLocalDescription(offer)
+
+                guard let sessionID = activeSessionID else {
+                    throw NSError(domain: "RTCClient", code: 24, userInfo: [NSLocalizedDescriptionKey: "Missing active session"])
+                }
+
+                try await postOffer(sessionID: sessionID, sdp: offer.sdp, type: "offer", from: initiator)
+                sendRtcInvite(conversationID: response.session.conversationID ?? "", sessionID: sessionID, initiator: initiator, displayName: peerEmail)
+                completion(.success(sessionID))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func postOffer(sessionID: String, sdp: String, type: String, from: String) async throws {
+        var request = URLRequest(url: rtcBaseURL.appendingPathComponent("/sessions/\(sessionID)/offer"))
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload = SDPPayload(type: type, sdp: sdp, from: from)
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw NSError(domain: "RTCClient", code: 25, userInfo: [NSLocalizedDescriptionKey: "Offer update failed: \(String(data: data, encoding: .utf8) ?? "")"])
+        }
+    }
+
+    private func sendRtcInvite(conversationID: String, sessionID: String, initiator: String, displayName: String?) {
+        guard !conversationID.isEmpty else {
+            return
+        }
+        let payload: [String: Any] = [
+            "kind": "invite",
+            "session_id": sessionID,
+            "from": initiator,
+            "display_name": displayName ?? initiator
+        ]
+        let envelope: [String: Any] = [
+            "type": "rtc_signal",
+            "conversation_id": conversationID,
+            "text": (try? JSONSerialization.data(withJSONObject: payload, options: []))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        ]
+        ChatWebSocketManager.shared.sendJSON(envelope)
     }
 }
 
