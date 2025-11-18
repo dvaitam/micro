@@ -499,10 +499,16 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     if (!conversation) {
       return 'Conversation';
     }
-    if (conversation.name?.trim()) {
-      return conversation.name.trim();
-    }
     const participants = conversation.participants || [];
+    const rawName = conversation.name?.trim() || '';
+    const isGroup = !!conversation.is_group;
+
+    // For explicit groups (including 2-person groups with a custom name),
+    // always respect the stored name.
+    if (isGroup && rawName) {
+      return rawName;
+    }
+
     if (participants.length === 0) {
       return 'Conversation';
     }

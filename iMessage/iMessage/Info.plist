@@ -27,5 +27,9 @@
 		<string>voip</string>
 		<string>push-to-talk</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>iMessage uses the microphone for voice calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>iMessage uses the camera for video calls.</string>
 </dict>
 </plist>

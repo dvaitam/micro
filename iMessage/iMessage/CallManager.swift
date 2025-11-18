@@ -27,6 +27,39 @@ final class CallManager: NSObject, CXProviderDelegate {
         provider.setDelegate(self, queue: nil)
     }
 
+    func reportIncomingCall(conversationID: String, sessionID: String, fromEmail: String, displayName: String?) {
+        if currentCallUUID != nil {
+            print("CallManager: incoming call already active, ignoring new invite")
+            return
+        }
+        let name = displayName?.isEmpty == false ? displayName! : fromEmail
+
+        let uuid = UUID()
+        currentCallUUID = uuid
+        currentConversationID = conversationID
+        currentSessionID = sessionID
+        currentRemoteEmail = fromEmail
+        currentDisplayName = name
+
+        let handle = CXHandle(type: .emailAddress, value: fromEmail)
+        let update = CXCallUpdate()
+        update.remoteHandle = handle
+        update.localizedCallerName = name
+        update.hasVideo = true
+
+        provider.reportNewIncomingCall(with: uuid, update: update) { error in
+            if let error = error {
+                print("Failed to report incoming call: \(error)")
+            } else {
+                print("Reported incoming call from \(fromEmail) for conversation \(conversationID)")
+            }
+        }
+    }
+
+    func handleIncomingRtcInvite(conversationID: String, sessionID: String, fromEmail: String, displayName: String?) {
+        reportIncomingCall(conversationID: conversationID, sessionID: sessionID, fromEmail: fromEmail, displayName: displayName)
+    }
+
     func handleIncomingVoIPPush(payload: PKPushPayload) {
         let dict = payload.dictionaryPayload
         let aps = dict["aps"] as? [String: Any]
@@ -45,26 +78,7 @@ final class CallManager: NSObject, CXProviderDelegate {
             return
         }
 
-        let uuid = UUID()
-        currentCallUUID = uuid
-        currentConversationID = conversationID
-        currentSessionID = sessionID
-        currentRemoteEmail = fromEmail
-        currentDisplayName = displayName
-
-        let handle = CXHandle(type: .emailAddress, value: fromEmail)
-        let update = CXCallUpdate()
-        update.remoteHandle = handle
-        update.localizedCallerName = displayName
-        update.hasVideo = true
-
-        provider.reportNewIncomingCall(with: uuid, update: update) { error in
-            if let error = error {
-                print("Failed to report incoming call: \(error)")
-            } else {
-                print("Reported incoming call from \(fromEmail) for conversation \(conversationID)")
-            }
-        }
+        reportIncomingCall(conversationID: conversationID, sessionID: sessionID, fromEmail: fromEmail, displayName: displayName)
     }
 
     func providerDidReset(_ provider: CXProvider) {

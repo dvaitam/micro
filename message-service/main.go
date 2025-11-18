@@ -693,11 +693,7 @@ func contains(list []string, value string) bool {
 
 func buildConversationName(participants []string, createdBy string) string {
 	if len(participants) == 2 {
-		for _, p := range participants {
-			if p != createdBy {
-				return p
-			}
-		}
+		return ""
 	}
 	if len(participants) <= 3 {
 		return strings.Join(participants, ", ")

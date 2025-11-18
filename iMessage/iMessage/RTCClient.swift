@@ -11,6 +11,11 @@ final class RTCClient: NSObject {
     private var peerConnectionFactory: RTCPeerConnectionFactory?
     private var peerConnection: RTCPeerConnection?
     private var localAudioTrack: RTCAudioTrack?
+    private var localVideoTrack: RTCVideoTrack?
+    private var videoCapturer: RTCCameraVideoCapturer?
+    private var videoSource: RTCVideoSource?
+    private var lastRemoteVideoTrack: RTCVideoTrack?
+    private var remoteVideoTrackHandler: ((RTCVideoTrack) -> Void)?
 
     private var activeSessionID: String?
     private var activeConversationID: String?
@@ -24,6 +29,22 @@ final class RTCClient: NSObject {
         super.init()
     }
 
+    private func sanitizeSDP(_ sdp: String) -> String {
+        let lines = sdp.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" }).map { String($0) }
+        var filtered: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                continue
+            }
+            if trimmed.hasPrefix("a=ssrc-group:FID ") {
+                continue
+            }
+            filtered.append(trimmed)
+        }
+        return filtered.joined(separator: "\r\n") + "\r\n"
+    }
+
     private func ensureFactory() -> RTCPeerConnectionFactory {
         if let factory = peerConnectionFactory {
             return factory
@@ -34,10 +55,14 @@ final class RTCClient: NSObject {
         return factory
     }
 
-    private func configureAudioSession() throws {
+    private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
-        try session.setActive(true)
+        do {
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+            try session.setActive(true)
+        } catch {
+            print("RTCClient: audio session setup error: \(error)")
+        }
     }
 
     private func makePeerConnection(turn: TurnCredentials?, email: String) throws -> RTCPeerConnection {
@@ -58,8 +83,77 @@ final class RTCClient: NSObject {
         connection.add(audioTrack, streamIds: ["stream0"])
         localAudioTrack = audioTrack
 
+        let videoSource = factory.videoSource()
+        self.videoSource = videoSource
+        let videoTrack = factory.videoTrack(with: videoSource, trackId: "video0")
+        connection.add(videoTrack, streamIds: ["stream0"])
+        localVideoTrack = videoTrack
+
+        let capturer = RTCCameraVideoCapturer(delegate: videoSource)
+        videoCapturer = capturer
+
         currentUserEmail = email
         return connection
+    }
+
+    func setRemoteVideoTrackHandler(_ handler: @escaping (RTCVideoTrack) -> Void) {
+        remoteVideoTrackHandler = handler
+        if let track = lastRemoteVideoTrack {
+            handler(track)
+        }
+    }
+
+    func startLocalVideoIfNeeded() {
+        print("RTCClient: startLocalVideoIfNeeded called")
+        guard let capturer = videoCapturer else {
+            print("RTCClient: startLocalVideoIfNeeded: no videoCapturer available")
+            return
+        }
+
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            print("RTCClient: camera authorized")
+            startCapture(with: capturer)
+        case .notDetermined:
+            print("RTCClient: camera auth notDetermined, requesting")
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self = self else { return }
+                if granted {
+                    DispatchQueue.main.async {
+                        self.startLocalVideoIfNeeded()
+                    }
+                } else {
+                    print("RTCClient: camera access denied by user")
+                }
+            }
+        default:
+            print("RTCClient: camera access not granted (status=\(status.rawValue))")
+        }
+    }
+
+    private func startCapture(with capturer: RTCCameraVideoCapturer) {
+        let devices = RTCCameraVideoCapturer.captureDevices()
+        guard let device = devices.first(where: { $0.position == .front }) ?? devices.first else {
+            print("RTCClient: no capture devices available")
+            return
+        }
+
+        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
+        guard let format = formats.first else {
+            print("RTCClient: no supported formats for device \(device)")
+            return
+        }
+
+        let maxFps = format.videoSupportedFrameRateRanges.first?.maxFrameRate ?? 15
+        let fps = max(10, min(Int(maxFps), 30))
+
+        print("RTCClient: starting capture on device=\(device.localizedName), fps=\(fps)")
+        DispatchQueue.main.async {
+            capturer.startCapture(with: device, format: format, fps: fps) { error in
+                print("RTCClient: video capture callback: \(error)")
+            }
+        }
     }
 
     func joinAsCallee(sessionID: String, conversationID: String, remoteEmail: String, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -68,12 +162,7 @@ final class RTCClient: NSObject {
             return
         }
 
-        do {
-            try configureAudioSession()
-        } catch {
-            completion(.failure(error))
-            return
-        }
+        configureAudioSession()
 
         fetchSession(sessionID: sessionID, participant: email) { [weak self] result in
             guard let self = self else { return }
@@ -104,7 +193,7 @@ final class RTCClient: NSObject {
         }
 
         let offer = response.session.offer!
-        let remoteDescription = RTCSessionDescription(type: .offer, sdp: offer.sdp)
+        let remoteDescription = RTCSessionDescription(type: .offer, sdp: sanitizeSDP(offer.sdp))
         peerConnection?.setRemoteDescription(remoteDescription) { [weak self] error in
             if let error = error {
                 completion(.failure(error))
@@ -115,7 +204,7 @@ final class RTCClient: NSObject {
     }
 
     private func createAndSendAnswer(localEmail: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: ["OfferToReceiveAudio": "true", "OfferToReceiveVideo": "false"])
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: ["OfferToReceiveAudio": "true", "OfferToReceiveVideo": "true"])
         peerConnection?.answer(for: constraints) { [weak self] description, error in
             guard let self = self else { return }
             if let error = error {
@@ -169,6 +258,12 @@ final class RTCClient: NSObject {
         }
         peerConnection?.close()
         peerConnection = nil
+        if let capturer = videoCapturer {
+            capturer.stopCapture {}
+        }
+        videoCapturer = nil
+        videoSource = nil
+        localVideoTrack = nil
         activeSessionID = nil
         activeConversationID = nil
         currentUserEmail = nil
@@ -309,7 +404,11 @@ extension RTCClient: RTCPeerConnectionDelegate {
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
-        print("RTCClient: didAdd stream with \(stream.audioTracks.count) audio tracks")
+        print("RTCClient: didAdd stream with \(stream.audioTracks.count) audio tracks and \(stream.videoTracks.count) video tracks")
+        if let videoTrack = stream.videoTracks.first {
+            lastRemoteVideoTrack = videoTrack
+            remoteVideoTrackHandler?(videoTrack)
+        }
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {

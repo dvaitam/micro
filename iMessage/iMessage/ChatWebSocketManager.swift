@@ -156,12 +156,46 @@ final class ChatWebSocketManager {
                     NotificationCenter.default.post(name: .chatPresenceUpdated, object: nil, userInfo: ["event": event])
                 case "rtc_signal":
                     NotificationCenter.default.post(name: .chatRtcSignalReceived, object: nil, userInfo: ["event": event])
+                    self.handleRtcSignal(event: event)
                 default:
                     break
                 }
             }
         } catch {
             print("\(logPrefix) failed to decode WebSocket event: \(error)")
+        }
+    }
+
+    private func handleRtcSignal(event: ChatSocketEvent) {
+        guard let conversationID = event.conversationID,
+              let from = event.from,
+              let text = event.text,
+              let data = text.data(using: .utf8) else {
+            return
+        }
+        struct SignalPayload: Decodable {
+            let kind: String?
+            let sessionID: String?
+            let from: String?
+            let displayName: String?
+
+            enum CodingKeys: String, CodingKey {
+                case kind
+                case sessionID = "session_id"
+                case from
+                case displayName = "display_name"
+            }
+        }
+        do {
+            let payload = try JSONDecoder().decode(SignalPayload.self, from: data)
+            guard let kind = payload.kind, kind == "invite",
+                  let sessionID = payload.sessionID else {
+                return
+            }
+            let displayName = payload.displayName
+            CallManager.shared.handleIncomingRtcInvite(conversationID: conversationID, sessionID: sessionID, fromEmail: payload.from ?? from, displayName: displayName)
+        } catch {
+            print("\(logPrefix) failed to decode rtc_signal payload: \(error)")
         }
     }
 
