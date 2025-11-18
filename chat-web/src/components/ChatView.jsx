@@ -76,6 +76,24 @@ const buildPlaceholder = (text, variant, cache) => {
   return dataURL;
 };
 
+const sanitizeSDP = (sdp) => {
+  if (!sdp || typeof sdp !== 'string') {
+    return sdp;
+  }
+  const lines = sdp.split(/\r?\n/);
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (trimmed.startsWith('a=ssrc-group:FID ')) {
+      return false;
+    }
+    return true;
+  });
+  return `${filtered.join('\r\n')}\r\n`;
+};
+
 const deriveWsURL = (apiBase, token) => {
   const explicitURL = import.meta.env.VITE_WS_URL;
   if (explicitURL) {
@@ -712,7 +730,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       try {
         await pc.setRemoteDescription({
           type: sessionPayload.answer.type || 'answer',
-          sdp: sessionPayload.answer.sdp,
+          sdp: sanitizeSDP(sessionPayload.answer.sdp),
         });
         setCallState((prev) => ({ ...prev, status: 'connecting' }));
       } catch (err) {
@@ -861,7 +879,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
       await peerConnection.setRemoteDescription({
         type: rtcSession.offer.type || 'offer',
-        sdp: rtcSession.offer.sdp,
+        sdp: sanitizeSDP(rtcSession.offer.sdp),
       });
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
