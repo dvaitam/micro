@@ -136,7 +136,18 @@ final class RTCClient: NSObject {
                     completion(.failure(NSError(domain: "RTCClient", code: 4, userInfo: [NSLocalizedDescriptionKey: "Missing active session"])))
                     return
                 }
-                self.postAnswer(sessionID: sessionID, sdp: description.sdp, type: description.type.rawValue, from: localEmail) { result in
+                let typeString: String
+                switch description.type {
+                case .offer:
+                    typeString = "offer"
+                case .answer:
+                    typeString = "answer"
+                case .prAnswer:
+                    typeString = "pranswer"
+                @unknown default:
+                    typeString = "answer"
+                }
+                self.postAnswer(sessionID: sessionID, sdp: description.sdp, type: typeString, from: localEmail) { result in
                     switch result {
                     case .failure(let error):
                         completion(.failure(error))
@@ -405,4 +416,3 @@ struct TurnCredentials: Decodable {
         case urls
     }
 }
-
