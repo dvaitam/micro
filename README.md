@@ -43,7 +43,7 @@ Sessions expire after 15 minutes of inactivity by default (`SESSION_TTL_SECONDS`
 Set these environment variables (either exported before `docker compose up` or placed in an `.env` file):
 
 - `TURN_SHARED_SECRET`: required. Used both by `turn-server` (coturn) and `rtc-service` to mint long-term TURN credentials. Defaults to `devsecret` for local play but **must** be overridden in any shared environment.
-- `TURN_SERVER_URLS`: optional CSV override for the ICE server list exposed to clients (default points at the bundled coturn instance on both UDP/TCP).
+- `TURN_SERVER_URLS`: optional CSV override for the ICE server list exposed to clients (defaults to `turn:localhost:3478?...` so browsers can reach the bundled coturn instance published on the host).
 - `TURN_CREDENTIAL_TTL`: life span of TURN usernames/passwords in seconds (default 600).
 - `SESSION_TTL_SECONDS`: inactivity timeout for signaling sessions (default 900).
 - `CORS_ALLOWED_ORIGINS`: CSV of browser origins that may call the signaling REST API. When unset it allows `http://localhost:5173` and `http://127.0.0.1:5173`; in production wire this to the same list as `CHAT_WEB_ORIGIN` via `.env` (see docker-compose).
@@ -59,4 +59,4 @@ The public TLS endpoints terminate on the host nginx instance:
 - Container images compile with Go 1.24; local `go build` may require Go ≥1.21 because dependencies rely on `errors.Join`.
 - If you need to adjust DSNs or ports, update `docker-compose.yml` and rebuild.
 - Redis pub/sub is only used for live traffic; message persistence or history is out of scope.
-- For TURN in production you’ll typically point `TURN_SERVER_URLS` at a public IP/DNS that routes to a hardened coturn instance and open the UDP relay range in your firewall.
+- For TURN in production you’ll typically point `TURN_SERVER_URLS` at a public IP/DNS that routes to a hardened coturn instance and open the UDP relay range in your firewall—the built-in `localhost` defaults only work for local development on the same machine that runs Docker.

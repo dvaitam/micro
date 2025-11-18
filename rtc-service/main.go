@@ -129,7 +129,7 @@ func loadConfig() config {
 	turnTTL := durationFromEnv("TURN_CREDENTIAL_TTL", 10*time.Minute)
 	turnURLs := parseCSVEnv("TURN_SERVER_URLS")
 	if len(turnURLs) == 0 {
-		turnURLs = []string{"turn:turn-server:3478?transport=udp", "turn:turn-server:3478?transport=tcp"}
+		turnURLs = []string{"turn:localhost:3478?transport=udp", "turn:localhost:3478?transport=tcp"}
 	}
 
 	corsAllowed := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
