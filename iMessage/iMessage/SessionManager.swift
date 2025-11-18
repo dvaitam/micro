@@ -2,7 +2,12 @@ import Foundation
 
 struct SessionInfo {
     let email: String
-    let token: String
+    let accessToken: String
+    let refreshToken: String?
+
+    var token: String {
+        return accessToken
+    }
 }
 
 final class SessionManager {
@@ -12,7 +17,9 @@ final class SessionManager {
     private let urlSession: URLSession
     private let userDefaults: UserDefaults
     private let emailKey = "SessionManager.email"
-    private let tokenKey = "SessionManager.token"
+    private let legacyTokenKey = "SessionManager.token"
+    private let accessTokenKey = "SessionManager.accessToken"
+    private let refreshTokenKey = "SessionManager.refreshToken"
 
     private(set) var email: String? {
         didSet {
@@ -24,14 +31,28 @@ final class SessionManager {
         }
     }
 
-    private(set) var token: String? {
+    private(set) var accessToken: String? {
         didSet {
-            if let token = token {
-                userDefaults.set(token, forKey: tokenKey)
+            if let token = accessToken {
+                userDefaults.set(token, forKey: accessTokenKey)
             } else {
-                userDefaults.removeObject(forKey: tokenKey)
+                userDefaults.removeObject(forKey: accessTokenKey)
             }
         }
+    }
+
+    private(set) var refreshToken: String? {
+        didSet {
+            if let token = refreshToken {
+                userDefaults.set(token, forKey: refreshTokenKey)
+            } else {
+                userDefaults.removeObject(forKey: refreshTokenKey)
+            }
+        }
+    }
+
+    var token: String? {
+        return accessToken
     }
 
     private var isRefreshing = false
@@ -41,26 +62,29 @@ final class SessionManager {
         self.urlSession = urlSession
         self.userDefaults = userDefaults
         self.email = userDefaults.string(forKey: emailKey)
-        self.token = userDefaults.string(forKey: tokenKey)
+
+        let storedAccess = userDefaults.string(forKey: accessTokenKey)
+        let storedRefresh = userDefaults.string(forKey: refreshTokenKey)
+        let legacy = userDefaults.string(forKey: legacyTokenKey)
+
+        // Prefer explicitly stored tokens; fall back to legacy token for compatibility.
+        self.accessToken = storedAccess ?? legacy
+        self.refreshToken = storedRefresh ?? legacy
     }
 
-    func updateSession(email: String, token: String) {
+    func updateSession(email: String, accessToken: String, refreshToken: String) {
         self.email = email
-        self.token = token
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
     }
 
     func clearSession() {
         email = nil
-        token = nil
+        accessToken = nil
+        refreshToken = nil
     }
 
     func refreshSession(force: Bool = false, completion: ((Result<SessionInfo, Error>) -> Void)? = nil) {
-        if !force, let email = email, let token = token {
-            let info = SessionInfo(email: email, token: token)
-            completion?(.success(info))
-            return
-        }
-
         if let completion = completion {
             pendingCompletions.append(completion)
         }
@@ -70,52 +94,82 @@ final class SessionManager {
         }
 
         guard let url = URL(string: "/api/session", relativeTo: baseURL) else {
-            if let completion = completion {
-                let error = NSError(domain: "SessionManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid session URL"])
-                completion(.failure(error))
-            }
+            let error = NSError(domain: "SessionManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid session URL"])
+            finishRefresh(with: .failure(error))
+            return
+        }
+
+        // Prefer refresh token when available; fall back to access token for older sessions.
+        guard let authToken = refreshToken ?? accessToken else {
+            let error = NSError(domain: "SessionManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Missing auth token"])
+            finishRefresh(with: .failure(error))
             return
         }
 
         isRefreshing = true
 
         var request = URLRequest(url: url)
-        if let token = token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
         urlSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isRefreshing = false
 
-                var result: Result<SessionInfo, Error>
-
                 if let error = error {
-                    result = .failure(error)
-                } else if let data = data, let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    do {
-                        struct APIResponse: Decodable {
-                            let email: String
-                            let token: String
-                        }
-                        let decoded = try JSONDecoder().decode(APIResponse.self, from: data)
-                        let info = SessionInfo(email: decoded.email, token: decoded.token)
-                        self.email = info.email
-                        self.token = info.token
-                        result = .success(info)
-                    } catch {
-                        result = .failure(error)
-                    }
-                } else {
-                    let error = NSError(domain: "SessionManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unable to load session"])
-                    result = .failure(error)
+                    self.finishRefresh(with: .failure(error))
+                    return
                 }
 
-                let completions = self.pendingCompletions
-                self.pendingCompletions.removeAll()
-                completions.forEach { $0(result) }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    let error = NSError(domain: "SessionManager", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+                    self.finishRefresh(with: .failure(error))
+                    return
+                }
+
+                guard httpResponse.statusCode == 200, let data = data else {
+                    let error = NSError(domain: "SessionManager", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Unable to load session"])
+                    self.finishRefresh(with: .failure(error))
+                    return
+                }
+
+                do {
+                    struct APIResponse: Decodable {
+                        let email: String
+                        let token: String
+                        let accessToken: String?
+                        let tokenType: String?
+                        let expiresIn: Int?
+
+                        enum CodingKeys: String, CodingKey {
+                            case email
+                            case token
+                            case accessToken = "access_token"
+                            case tokenType = "token_type"
+                            case expiresIn = "expires_in"
+                        }
+                    }
+
+                    let decoded = try JSONDecoder().decode(APIResponse.self, from: data)
+                    let newAccessToken = decoded.accessToken ?? self.accessToken ?? authToken
+                    let info = SessionInfo(email: decoded.email, accessToken: newAccessToken, refreshToken: decoded.token)
+
+                    self.email = info.email
+                    self.accessToken = info.accessToken
+                    self.refreshToken = info.refreshToken
+
+                    self.finishRefresh(with: .success(info))
+                } catch {
+                    self.finishRefresh(with: .failure(error))
+                }
             }
         }.resume()
+    }
+
+    private func finishRefresh(with result: Result<SessionInfo, Error>) {
+        let completions = pendingCompletions
+        pendingCompletions.removeAll()
+        completions.forEach { $0(result) }
     }
 }

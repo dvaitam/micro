@@ -232,16 +232,22 @@ class ViewController: UIViewController {
                 struct VerifyResponse: Decodable {
                     let email: String
                     let accessToken: String
+                    let sessionToken: String
 
                     enum CodingKeys: String, CodingKey {
                         case email
                         case accessToken = "access_token"
+                        case sessionToken = "session_token"
                     }
                 }
 
                 do {
                     let response = try JSONDecoder().decode(VerifyResponse.self, from: data)
-                    SessionManager.shared.updateSession(email: response.email, token: response.accessToken)
+                    SessionManager.shared.updateSession(
+                        email: response.email,
+                        accessToken: response.accessToken,
+                        refreshToken: response.sessionToken
+                    )
                     self.statusLabel.text = "Login successful."
                     self.userDidLogin()
                     self.showMessages()
@@ -253,31 +259,17 @@ class ViewController: UIViewController {
     }
 
     private func attemptAutoLogin() {
-        guard let url = URL(string: "/api/conversations", relativeTo: baseURL) else {
-            return
-        }
-
-        var request = URLRequest(url: url)
-        if let token = SessionManager.shared.token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        urlSession.dataTask(with: request) { [weak self] _, response, error in
+        SessionManager.shared.refreshSession { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if self.presentedViewController != nil {
                     return
                 }
-                if let _ = error {
-                    return
-                }
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    return
-                }
-                if httpResponse.statusCode == 200 {
+                if case .success = result {
                     self.showMessages()
                 }
             }
-        }.resume()
+        }
     }
 
     // Call this method when the user has successfully logged in
