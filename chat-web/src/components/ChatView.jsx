@@ -205,6 +205,17 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     }
   }, [loadMessages, messagesByConversation]);
 
+  const announceConversation = useCallback((conversationId) => {
+    if (!conversationId) {
+      return;
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'conversation', conversation_id: conversationId }));
+    } else {
+      pendingAnnouncements.current.push(conversationId);
+    }
+  }, []);
+
   const createChat = useCallback(async () => {
     const participants = selectedUserEmails.filter(Boolean);
     if (participants.length === 0) {
@@ -235,7 +246,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
           body: groupPhotoFile,
         });
         setGroupPhotoFile(null);
-        convoAvatarCache.current.delete(conversation.id);
+      convoAvatarCache.current.delete(conversation.id);
       }
       await selectConversation(conversation.id);
       announceConversation(conversation.id);
@@ -373,17 +384,6 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     }
     return buildPlaceholder(displayName, 'user', placeholderCache);
   }, [loadUserAvatar]);
-
-  const announceConversation = useCallback((conversationId) => {
-    if (!conversationId) {
-      return;
-    }
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'conversation', conversation_id: conversationId }));
-    } else {
-      pendingAnnouncements.current.push(conversationId);
-    }
-  }, []);
 
   useEffect(() => {
     loadConversations();
