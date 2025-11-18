@@ -803,12 +803,14 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       });
       const rtcSession = payload.session;
       const turn = payload.turn;
+      const iceServers = turn?.urls?.length ? [{
+        urls: turn.urls,
+        username: turn.username,
+        credential: turn.credential,
+      }] : [{ urls: 'stun:stun.l.google.com:19302' }];
+      console.info('[RTC] Using ICE servers', iceServers.map((entry) => entry.urls));
       const peerConnection = new RTCPeerConnection({
-        iceServers: turn?.urls?.length ? [{
-          urls: turn.urls,
-          username: turn.username,
-          credential: turn.credential,
-        }] : [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
       });
       peerConnectionRef.current = peerConnection;
       currentSessionRef.current = rtcSession.id;
@@ -866,12 +868,14 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       if (!rtcSession?.offer) {
         throw new Error('Missing offer');
       }
+      const iceServers = turn?.urls?.length ? [{
+        urls: turn.urls,
+        username: turn.username,
+        credential: turn.credential,
+      }] : [{ urls: 'stun:stun.l.google.com:19302' }];
+      console.info('[RTC] Using ICE servers', iceServers.map((entry) => entry.urls));
       const peerConnection = new RTCPeerConnection({
-        iceServers: turn?.urls?.length ? [{
-          urls: turn.urls,
-          username: turn.username,
-          credential: turn.credential,
-        }] : [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
       });
       peerConnectionRef.current = peerConnection;
       currentSessionRef.current = callStateRef.current.sessionId;
