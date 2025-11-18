@@ -341,6 +341,23 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     }
   }, [fetchJSON]);
 
+  const markConversationRead = useCallback(async (conversationId, { skipRequest = false } = {}) => {
+    if (!conversationId) {
+      return;
+    }
+    upsertConversation({ id: conversationId }, { setUnread: 0 });
+    if (skipRequest) {
+      return;
+    }
+    try {
+      await authorizedFetch(`/api/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+      });
+    } catch (err) {
+      console.debug('mark conversation read failed', err);
+    }
+  }, [authorizedFetch, upsertConversation]);
+
   const selectConversation = useCallback(async (conversationId) => {
     if (!conversationId) {
       return;
@@ -583,23 +600,6 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       pendingSignals.current.push(message);
     }
   }, []);
-
-  const markConversationRead = useCallback(async (conversationId, { skipRequest = false } = {}) => {
-    if (!conversationId) {
-      return;
-    }
-    upsertConversation({ id: conversationId }, { setUnread: 0 });
-    if (skipRequest) {
-      return;
-    }
-    try {
-      await authorizedFetch(`/api/conversations/${encodeURIComponent(conversationId)}/read`, {
-        method: 'POST',
-      });
-    } catch (err) {
-      console.debug('mark conversation read failed', err);
-    }
-  }, [authorizedFetch, upsertConversation]);
 
   const cleanupCall = useCallback(async ({ notify = false, sessionId, conversationId } = {}) => {
     const activeSession = sessionId || callStateRef.current.sessionId;
