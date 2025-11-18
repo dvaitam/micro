@@ -338,6 +338,40 @@ func (s *server) readLoop(cl *client) {
 				sendError(cl, "Unable to share conversation")
 			}
 
+		case "rtc_signal":
+			conversationID := strings.TrimSpace(incoming.ConversationID)
+			payload := strings.TrimSpace(incoming.Text)
+			if conversationID == "" || payload == "" {
+				sendError(cl, "Conversation id and payload are required")
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(backgroundCtx, 5*time.Second)
+			conv, err := s.messages.GetConversation(ctx, conversationID)
+			cancel()
+			if err != nil {
+				log.Printf("load conversation error: %v", err)
+				sendError(cl, "Unable to load conversation")
+				continue
+			}
+			if !contains(conv.Participants, cl.email) {
+				sendError(cl, "You are not part of this conversation")
+				continue
+			}
+
+			event := redisEvent{
+				Type:             "rtc_signal",
+				Participants:     conv.Participants,
+				ConversationID:   conv.ID,
+				ConversationName: conv.Name,
+				From:             cl.email,
+				Text:             payload,
+			}
+			if err := s.publishEvent(backgroundCtx, &event); err != nil {
+				log.Printf("redis publish error: %v", err)
+				sendError(cl, "Unable to publish signal")
+			}
+
 		default:
 			sendError(cl, "Unsupported message type")
 		}

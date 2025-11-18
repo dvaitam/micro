@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -29,6 +30,9 @@ type conversation struct {
 	CreatedAt      time.Time
 	CreatedBy      string
 	LastActivityAt time.Time
+	LastMessage    string
+	LastMessageAt  time.Time
+	LastSender     string
 }
 
 type message struct {
@@ -156,11 +160,39 @@ func ensureSchema(session *gocql.Session) error {
 			body text,
 			PRIMARY KEY ((conversation_id), sent_at, message_id)
 		) WITH CLUSTERING ORDER BY (sent_at ASC, message_id ASC)`,
+		`CREATE TABLE IF NOT EXISTS conversation_message_counts (
+			conversation_id uuid,
+			total_messages counter,
+			PRIMARY KEY (conversation_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS conversation_reads (
+			user_email text,
+			conversation_id uuid,
+			read_count bigint,
+			last_read_at timestamp,
+			PRIMARY KEY (user_email, conversation_id)
+		)`,
 	}
 
 	for _, stmt := range statements {
 		if err := session.Query(stmt).Exec(); err != nil {
 			return fmt.Errorf("ensure schema: %w", err)
+		}
+	}
+
+	alterStatements := []string{
+		`ALTER TABLE conversations ADD last_message text`,
+		`ALTER TABLE conversations ADD last_message_at timestamp`,
+		`ALTER TABLE conversations ADD last_sender text`,
+		`ALTER TABLE conversations_by_user ADD last_message text`,
+		`ALTER TABLE conversations_by_user ADD last_message_at timestamp`,
+		`ALTER TABLE conversations_by_user ADD last_sender text`,
+	}
+	for _, stmt := range alterStatements {
+		if err := session.Query(stmt).Exec(); err != nil {
+			if !isAlreadyExistsError(err) {
+				return fmt.Errorf("ensure schema alter: %w", err)
+			}
 		}
 	}
 	return nil
@@ -230,6 +262,15 @@ func (s *server) handleConversationResource(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "read" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleConversationRead(w, r, conversationID)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -240,22 +281,28 @@ func (s *server) listConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	iter := s.session.Query(`SELECT conversation_id, name, participants, last_activity_at FROM conversations_by_user WHERE user_email = ?`, user).Iter()
+	iter := s.session.Query(`SELECT conversation_id, name, participants, last_activity_at, last_message, last_message_at, last_sender FROM conversations_by_user WHERE user_email = ?`, user).Iter()
 	var (
-		id           gocql.UUID
-		name         string
-		participants []string
-		lastActivity time.Time
+		id            gocql.UUID
+		name          string
+		participants  []string
+		lastActivity  time.Time
+		lastMessage   string
+		lastMessageAt time.Time
+		lastSender    string
 	)
 
 	conversations := make([]conversation, 0, 16)
 
-	for iter.Scan(&id, &name, &participants, &lastActivity) {
+	for iter.Scan(&id, &name, &participants, &lastActivity, &lastMessage, &lastMessageAt, &lastSender) {
 		conversations = append(conversations, conversation{
 			ID:             id,
 			Name:           name,
 			Participants:   copyAndSort(participants),
 			LastActivityAt: lastActivity,
+			LastMessage:    lastMessage,
+			LastMessageAt:  lastMessageAt,
+			LastSender:     lastSender,
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -270,12 +317,17 @@ func (s *server) listConversations(w http.ResponseWriter, r *http.Request) {
 	resp := make([]map[string]interface{}, 0, len(conversations))
 	for _, c := range conversations {
 		isGroup := isGroupConversation(c.Name, c.Participants)
+		unread := s.calculateUnread(user, c.ID)
 		resp = append(resp, map[string]interface{}{
 			"id":               c.ID.String(),
 			"name":             c.Name,
 			"participants":     c.Participants,
 			"last_activity_at": c.LastActivityAt.UTC().Format(time.RFC3339),
 			"is_group":         isGroup,
+			"last_message":     strings.TrimSpace(c.LastMessage),
+			"last_message_at":  formatTime(c.LastMessageAt),
+			"last_sender":      c.LastSender,
+			"unread_count":     unread,
 		})
 	}
 
@@ -393,6 +445,7 @@ func (s *server) listMessages(w http.ResponseWriter, r *http.Request, id gocql.U
 			limit = parsed
 		}
 	}
+	reader := strings.TrimSpace(r.URL.Query().Get("reader"))
 
 	iter := s.session.Query(
 		`SELECT sent_at, message_id, sender, body FROM messages WHERE conversation_id = ? LIMIT ?`,
@@ -424,6 +477,39 @@ func (s *server) listMessages(w http.ResponseWriter, r *http.Request, id gocql.U
 		"conversation_id": id.String(),
 		"messages":        messages,
 	})
+
+	if reader != "" {
+		if err := s.markConversationRead(reader, id, -1); err != nil {
+			log.Printf("mark conversation read for %s/%s failed: %v", reader, id, err)
+		}
+	}
+}
+
+func (s *server) handleConversationRead(w http.ResponseWriter, r *http.Request, id gocql.UUID) {
+	var payload struct {
+		User string `json:"user"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json payload", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	payload.User = strings.TrimSpace(payload.User)
+	if payload.User == "" {
+		http.Error(w, "user is required", http.StatusBadRequest)
+		return
+	}
+	if !s.userInConversation(payload.User, id) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := s.markConversationRead(payload.User, id, -1); err != nil {
+		log.Printf("mark conversation read error: %v", err)
+		http.Error(w, "unable to mark conversation read", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversationID gocql.UUID) {
@@ -477,17 +563,25 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request, conversat
 	for _, participant := range conv.Participants {
 		setParticipants[participant] = struct{}{}
 		if err := s.session.Query(
-			`UPDATE conversations_by_user SET last_activity_at = ? WHERE user_email = ? AND conversation_id = ?`,
-			now, participant, conversationID,
+			`UPDATE conversations_by_user SET last_activity_at = ?, last_message = ?, last_message_at = ?, last_sender = ? WHERE user_email = ? AND conversation_id = ?`,
+			now, payload.Text, now, payload.Sender, participant, conversationID,
 		).Exec(); err != nil {
 			log.Printf("warn: update conversations_by_user for %s failed: %v", participant, err)
 		}
 	}
 	if err := s.session.Query(
-		`UPDATE conversations SET last_activity_at = ? WHERE conversation_id = ?`,
-		now, conversationID,
+		`UPDATE conversations SET last_activity_at = ?, last_message = ?, last_message_at = ?, last_sender = ? WHERE conversation_id = ?`,
+		now, payload.Text, now, payload.Sender, conversationID,
 	).Exec(); err != nil {
 		log.Printf("warn: update conversations last_activity failed: %v", err)
+	}
+
+	total, err := s.incrementConversationMessageCount(conversationID)
+	if err != nil {
+		log.Printf("warn: increment conversation counter failed: %v", err)
+	}
+	if err := s.markConversationRead(payload.Sender, conversationID, total); err != nil {
+		log.Printf("warn: mark sender read failed: %v", err)
 	}
 
 	resp := map[string]interface{}{
@@ -563,6 +657,14 @@ func copyAndSort(values []string) []string {
 	return out
 }
 
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "existing column") || strings.Contains(msg, "invalid column name")
+}
+
 func uniqueNonEmpty(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
@@ -611,6 +713,111 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 			log.Printf("failed to encode json: %v", err)
 		}
 	}
+}
+
+func (s *server) userInConversation(user string, conversationID gocql.UUID) bool {
+	if user == "" {
+		return false
+	}
+	var id gocql.UUID
+	err := s.session.Query(
+		`SELECT conversation_id FROM conversations_by_user WHERE user_email = ? AND conversation_id = ?`,
+		user, conversationID,
+	).Scan(&id)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		log.Printf("userInConversation lookup error: %v", err)
+		return false
+	}
+	return true
+}
+
+func (s *server) getConversationTotalMessages(conversationID gocql.UUID) (int64, error) {
+	var total int64
+	err := s.session.Query(
+		`SELECT total_messages FROM conversation_message_counts WHERE conversation_id = ?`,
+		conversationID,
+	).Scan(&total)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (s *server) incrementConversationMessageCount(conversationID gocql.UUID) (int64, error) {
+	if err := s.session.Query(
+		`UPDATE conversation_message_counts SET total_messages = total_messages + 1 WHERE conversation_id = ?`,
+		conversationID,
+	).Exec(); err != nil {
+		return 0, err
+	}
+	return s.getConversationTotalMessages(conversationID)
+}
+
+func (s *server) getConversationReadCount(user string, conversationID gocql.UUID) (int64, error) {
+	var readCount int64
+	err := s.session.Query(
+		`SELECT read_count FROM conversation_reads WHERE user_email = ? AND conversation_id = ?`,
+		user, conversationID,
+	).Scan(&readCount)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return readCount, nil
+}
+
+func (s *server) markConversationRead(user string, conversationID gocql.UUID, total int64) error {
+	if user == "" {
+		return errors.New("user required")
+	}
+	if total < 0 {
+		var err error
+		total, err = s.getConversationTotalMessages(conversationID)
+		if err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC()
+	return s.session.Query(
+		`INSERT INTO conversation_reads (user_email, conversation_id, read_count, last_read_at) VALUES (?, ?, ?, ?)`,
+		user, conversationID, total, now,
+	).Exec()
+}
+
+func (s *server) calculateUnread(user string, conversationID gocql.UUID) int {
+	total, err := s.getConversationTotalMessages(conversationID)
+	if err != nil {
+		log.Printf("get total messages for %s error: %v", conversationID, err)
+		return 0
+	}
+	read, err := s.getConversationReadCount(user, conversationID)
+	if err != nil {
+		log.Printf("get read messages for %s/%s error: %v", user, conversationID, err)
+		return 0
+	}
+	diff := total - read
+	if diff < 0 {
+		diff = 0
+	}
+	if diff > int64(math.MaxInt32) {
+		return math.MaxInt32
+	}
+	return int(diff)
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func isGroupConversation(name string, participants []string) bool {

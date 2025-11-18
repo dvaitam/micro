@@ -793,6 +793,39 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 		handleAPIConversationPhoto(w, r, conversationID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "read" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		conversation, err := messageSvc.GetConversation(ctx, conversationID)
+		cancel()
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("conversation lookup error: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to load conversation"})
+			return
+		}
+		if !contains(conversation.Participants, sess.Email) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return
+		}
+		ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
+		err = messageSvc.MarkConversationRead(ctx, conversationID, sess.Email)
+		cancel()
+		if err != nil {
+			log.Printf("mark conversation read error: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "unable to update read state"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if len(parts) == 1 {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -849,10 +882,11 @@ func handleAPIConversationResource(w http.ResponseWriter, r *http.Request) {
 
 			ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
 			var messages []messageView
+			reader := sess.Email
 			if limit > 0 {
-				messages, err = messageSvc.ListMessagesWithLimit(ctx, conversationID, limit)
+				messages, err = messageSvc.ListMessagesWithLimit(ctx, conversationID, limit, reader)
 			} else {
-				messages, err = messageSvc.ListMessages(ctx, conversationID)
+				messages, err = messageSvc.ListMessages(ctx, conversationID, reader)
 			}
 			cancel()
 			if err != nil {
@@ -1208,6 +1242,10 @@ type conversationView struct {
 	Participants   []string `json:"participants"`
 	LastActivityAt string   `json:"last_activity_at"`
 	IsGroup        bool     `json:"is_group"`
+	LastMessage    string   `json:"last_message"`
+	LastMessageAt  string   `json:"last_message_at"`
+	LastSender     string   `json:"last_sender"`
+	UnreadCount    int      `json:"unread_count"`
 }
 
 type messageView struct {
@@ -1435,36 +1473,24 @@ func (m *messageServiceClient) GetConversation(ctx context.Context, id string) (
 	return &conv, nil
 }
 
-func (m *messageServiceClient) ListMessages(ctx context.Context, id string) ([]messageView, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, id), nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := m.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, decodeMessageServiceError(resp)
-	}
-
-	var payload struct {
-		Messages []messageView `json:"messages"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	return payload.Messages, nil
+func (m *messageServiceClient) ListMessages(ctx context.Context, id, reader string) ([]messageView, error) {
+	return m.ListMessagesWithLimit(ctx, id, 0, reader)
 }
 
-func (m *messageServiceClient) ListMessagesWithLimit(ctx context.Context, id string, limit int) ([]messageView, error) {
-	url := fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, id)
+func (m *messageServiceClient) ListMessagesWithLimit(ctx context.Context, id string, limit int, reader string) ([]messageView, error) {
+	base := fmt.Sprintf("%s/conversations/%s/messages", m.baseURL, id)
+	query := url.Values{}
 	if limit > 0 {
-		url = fmt.Sprintf("%s?limit=%d", url, limit)
+		query.Set("limit", strconv.Itoa(limit))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if reader != "" {
+		query.Set("reader", reader)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		base = fmt.Sprintf("%s?%s", base, encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1518,6 +1544,30 @@ func (m *messageServiceClient) CreateMessage(ctx context.Context, conversationID
 		return nil, err
 	}
 	return &msg, nil
+}
+
+func (m *messageServiceClient) MarkConversationRead(ctx context.Context, conversationID, user string) error {
+	payload := map[string]string{"user": user}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/conversations/%s/read", m.baseURL, conversationID), bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return decodeMessageServiceError(resp)
+	}
+	return nil
 }
 
 type conversationSummary struct {

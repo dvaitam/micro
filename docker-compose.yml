@@ -48,10 +48,47 @@ services:
       message-service:
         condition: service_started
 
+  rtc-service:
+    build: ./rtc-service
+    ports:
+      - "8085:8085"
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CHAT_WEB_ORIGIN},http://localhost:5173,http://127.0.0.1:5173
+      SERVICE_PORT: "8085"
+      SESSION_TTL_SECONDS: "900"
+      TURN_SERVER_URLS: ${TURN_SERVER_URLS:-turn:turn-server:3478?transport=udp,turn:turn-server:3478?transport=tcp}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:-devsecret}
+      TURN_CREDENTIAL_TTL: "600"
+    depends_on:
+      turn-server:
+        condition: service_started
+
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  turn-server:
+    image: coturn/coturn:4.5
+    command:
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --lt-cred-mech
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SHARED_SECRET:-devsecret}
+      - --realm=micro-chat
+      - --total-quota=300
+      - --bps-capacity=0
+      - --no-multicast-peers
+      - --stale-nonce
+      - --min-port=49160
+      - --max-port=49200
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+    restart: unless-stopped
 
   mysql:
     image: mysql:8.0
@@ -122,6 +159,7 @@ services:
       args:
         VITE_API_BASE_URL: ${CHAT_API_BASE_URL}
         VITE_WS_URL: ${CHAT_WS_URL}
+        VITE_RTC_BASE_URL: ${CHAT_RTC_BASE_URL:-https://webrtc.manchik.co.uk}
     ports:
       - "5173:80"
     depends_on:

@@ -26,6 +26,43 @@ const initialsFromText = (text) => {
 
 const encodeSvg = (svg) => window.btoa(unescape(encodeURIComponent(svg)));
 
+const pluralize = (value, unit) => `${value} ${unit}${value === 1 ? '' : 's'} ago`;
+
+const formatRelativeTime = (input) => {
+  if (!input) {
+    return '';
+  }
+  const target = new Date(input).getTime();
+  if (Number.isNaN(target)) {
+    return '';
+  }
+  const now = Date.now();
+  const diff = Math.max(0, now - target);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  if (diff < minute) {
+    return 'Just now';
+  }
+  if (diff < hour) {
+    const minutes = Math.floor(diff / minute);
+    return pluralize(minutes, 'minute');
+  }
+  if (diff < day) {
+    const hours = Math.floor(diff / hour);
+    return pluralize(hours, 'hour');
+  }
+  if (diff < week) {
+    const days = Math.floor(diff / day);
+    return pluralize(days, 'day');
+  }
+  if (diff < week * 2) {
+    return '1 week ago';
+  }
+  return new Date(target).toLocaleString();
+};
+
 const buildPlaceholder = (text, variant, cache) => {
   const initials = initialsFromText(text || 'Chat');
   const key = `${variant}:${initials}`;
@@ -60,6 +97,52 @@ const deriveWsURL = (apiBase, token) => {
   return `${secure ? 'wss' : 'ws'}://${host}/ws?token=${encodeURIComponent(token)}`;
 };
 
+const deriveRtcBaseURL = (apiBase) => {
+  const explicit = import.meta.env.VITE_RTC_BASE_URL;
+  if (explicit) {
+    return explicit.replace(/\/$/, '');
+  }
+  try {
+    const parsed = new URL(apiBase);
+    if (parsed.hostname === 'chat.manchik.co.uk') {
+      return 'https://webrtc.manchik.co.uk';
+    }
+    return `${parsed.protocol}//${parsed.hostname}:8085`;
+  } catch (err) {
+    console.error('Invalid API base for RTC fallback', err);
+    return window.location.origin.replace(/\/$/, '');
+  }
+};
+
+const defaultCallState = {
+  status: 'idle',
+  sessionId: '',
+  conversationId: '',
+  role: '',
+  peerEmail: '',
+  peerName: '',
+  localStream: null,
+  remoteStream: null,
+  turn: null,
+};
+
+const callStatusLabel = (state) => {
+  switch (state.status) {
+    case 'calling':
+      return 'Calling…';
+    case 'incoming':
+      return 'Incoming video call';
+    case 'connecting':
+      return 'Connecting…';
+    case 'in-call':
+      return 'In call';
+    case 'ending':
+      return 'Ending call…';
+    default:
+      return '';
+  }
+};
+
 function ChatView({ apiBase, accessToken, session, onLogout }) {
   const [conversations, setConversations] = useState([]);
   const [messagesByConversation, setMessagesByConversation] = useState({});
@@ -72,6 +155,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
   const [connectionStatus, setConnectionStatus] = useState('Connecting…');
   const [messageDraft, setMessageDraft] = useState('');
   const [systemNote, setSystemNote] = useState('');
+  const [callState, setCallState] = useState(defaultCallState);
 
   const placeholderCache = useRef(new Map());
   const userAvatarCache = useRef(new Map());
@@ -80,14 +164,29 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
   const loadingConvoAvatars = useRef(new Set());
   const wsRef = useRef(null);
   const pendingAnnouncements = useRef([]);
+  const pendingSignals = useRef([]);
   const [, forceAvatarRefresh] = useState(0);
   const selectedConversationRef = useRef('');
+  const callStateRef = useRef(defaultCallState);
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const sessionPollRef = useRef(null);
+  const seenCandidatesRef = useRef(new Set());
+  const currentSessionRef = useRef('');
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
 
   const normalizedCurrentUser = useMemo(() => normalizeEmail(session?.email || ''), [session?.email]);
+  const rtcBaseURL = useMemo(() => deriveRtcBaseURL(apiBase), [apiBase]);
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
 
   const authorizedFetch = useCallback(async (path, options = {}) => {
     const url = path.startsWith('http') ? path : `${apiBase}${path.startsWith('/') ? path : `/${path}`}`;
@@ -120,21 +219,61 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     return {};
   }, [authorizedFetch]);
 
-  const upsertConversation = useCallback((conversation) => {
+  const rtcFetch = useCallback(async (path, options = {}) => {
+    const url = path.startsWith('http') ? path : `${rtcBaseURL}${path.startsWith('/') ? path : `/${path}`}`;
+    const headers = new Headers(options.headers || {});
+    if (!headers.has('Content-Type') && options.body && !(options.body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json');
+    }
+    if (accessToken) {
+      headers.set('Authorization', `Bearer ${accessToken}`);
+    }
+    if (session?.email) {
+      headers.set('X-RTC-Participant', session.email);
+    }
+    const response = await fetch(url, {
+      credentials: 'include',
+      ...options,
+      headers,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || response.statusText);
+    }
+    const contentType = response.headers.get('Content-Type') || '';
+    if (contentType.includes('application/json')) {
+      return response.json();
+    }
+    return {};
+  }, [accessToken, rtcBaseURL, session?.email]);
+
+  const upsertConversation = useCallback((conversation, options = {}) => {
+    if (!conversation || !conversation.id) {
+      return;
+    }
     setConversations((prev) => {
       const map = new Map(prev.map((item) => [item.id, item]));
       const existing = map.get(conversation.id) || {};
       const participants = conversation.participants?.length ? conversation.participants : existing.participants || [];
+      let unreadCount = typeof existing.unread_count === 'number' ? existing.unread_count : 0;
+      if (typeof options.setUnread === 'number') {
+        unreadCount = Math.max(0, options.setUnread);
+      } else if (typeof options.incrementUnread === 'number') {
+        unreadCount = Math.max(0, unreadCount + options.incrementUnread);
+      } else if (typeof conversation.unread_count === 'number') {
+        unreadCount = Math.max(0, conversation.unread_count);
+      }
       const merged = {
         ...existing,
         ...conversation,
         participants,
         participantSignature: conversation.participant_signature || existing.participantSignature || participantSignature(participants),
+        unread_count: unreadCount,
       };
       map.set(merged.id, merged);
       return Array.from(map.values()).sort((a, b) => new Date(b.last_activity_at || 0) - new Date(a.last_activity_at || 0));
     });
-  }, []);
+  }, [participantSignature]);
 
   const appendMessage = useCallback((conversationId, message) => {
     setMessagesByConversation((prev) => ({
@@ -156,7 +295,14 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       }));
       if (list.length > 0) {
         const last = list[list.length - 1];
-        upsertConversation({ id: conversationId, last_activity_at: last.sent_at, lastMessagePreview: last.text });
+        upsertConversation({
+          id: conversationId,
+          last_activity_at: last.sent_at,
+          lastMessagePreview: last.text,
+          last_message: last.text,
+          last_message_at: last.sent_at,
+          last_sender: last.sender,
+        });
       }
     } catch (err) {
       console.error('load messages failed', err);
@@ -200,10 +346,12 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       return;
     }
     setSelectedConversationId(conversationId);
-    if (!messagesByConversation[conversationId]) {
+    const needsFetch = !messagesByConversation[conversationId];
+    if (needsFetch) {
       await loadMessages(conversationId);
     }
-  }, [loadMessages, messagesByConversation]);
+    await markConversationRead(conversationId, { skipRequest: needsFetch });
+  }, [loadMessages, markConversationRead, messagesByConversation]);
 
   const announceConversation = useCallback((conversationId) => {
     if (!conversationId) {
@@ -385,6 +533,479 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     return buildPlaceholder(displayName, 'user', placeholderCache);
   }, [loadUserAvatar]);
 
+  const conversationPreview = useCallback((conversation) => {
+    if (!conversation) {
+      return '';
+    }
+    const preview = conversation.last_message?.trim()
+      || conversation.lastMessagePreview?.trim()
+      || conversation.last_message_preview?.trim();
+    if (preview) {
+      const normalizedSender = normalizeEmail(conversation.last_sender || '');
+      if (normalizedSender && normalizedSender === normalizedCurrentUser) {
+        return `You: ${preview}`;
+      }
+      return preview;
+    }
+    const history = messagesByConversation[conversation.id] || [];
+    const last = history[history.length - 1];
+    if (last?.text?.trim()) {
+      const normalizedSender = normalizeEmail(last.sender || last.from || '');
+      const text = last.text.trim();
+      if (normalizedSender && normalizedSender === normalizedCurrentUser) {
+        return `You: ${text}`;
+      }
+      return text;
+    }
+    return 'No messages yet';
+  }, [messagesByConversation, normalizedCurrentUser]);
+
+  const conversationLastActivityLabel = useCallback((conversation) => {
+    if (!conversation) {
+      return '';
+    }
+    return formatRelativeTime(conversation.last_activity_at) || '';
+  }, []);
+
+  const sendRtcSignal = useCallback((conversationId, payload) => {
+    if (!conversationId || !payload) {
+      return;
+    }
+    const message = JSON.stringify({
+      type: 'rtc_signal',
+      conversation_id: conversationId,
+      text: JSON.stringify(payload),
+    });
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(message);
+    } else {
+      pendingSignals.current.push(message);
+    }
+  }, []);
+
+  const markConversationRead = useCallback(async (conversationId, { skipRequest = false } = {}) => {
+    if (!conversationId) {
+      return;
+    }
+    upsertConversation({ id: conversationId }, { setUnread: 0 });
+    if (skipRequest) {
+      return;
+    }
+    try {
+      await authorizedFetch(`/api/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+      });
+    } catch (err) {
+      console.debug('mark conversation read failed', err);
+    }
+  }, [authorizedFetch, upsertConversation]);
+
+  const cleanupCall = useCallback(async ({ notify = false, sessionId, conversationId } = {}) => {
+    const activeSession = sessionId || callStateRef.current.sessionId;
+    const activeConversation = conversationId || callStateRef.current.conversationId;
+    if (sessionPollRef.current) {
+      clearInterval(sessionPollRef.current);
+      sessionPollRef.current = null;
+    }
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.onicecandidate = null;
+        peerConnectionRef.current.ontrack = null;
+        peerConnectionRef.current.onconnectionstatechange = null;
+        peerConnectionRef.current.close();
+      } catch (err) {
+        console.debug('peer close failed', err);
+      }
+      peerConnectionRef.current = null;
+    }
+    seenCandidatesRef.current.clear();
+    currentSessionRef.current = '';
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current = null;
+    }
+    const resetState = { ...defaultCallState };
+    callStateRef.current = resetState;
+    setCallState(resetState);
+    if (notify && activeConversation && activeSession) {
+      sendRtcSignal(activeConversation, {
+        kind: 'end',
+        session_id: activeSession,
+        from: session.email,
+      });
+    }
+    if (activeSession) {
+      try {
+        await rtcFetch(`/sessions/${encodeURIComponent(activeSession)}`, { method: 'DELETE' });
+      } catch (err) {
+        console.debug('session cleanup failed', err);
+      }
+    }
+  }, [rtcFetch, sendRtcSignal, session.email]);
+
+  const ensureLocalStream = useCallback(async () => {
+    if (localStreamRef.current) {
+      return localStreamRef.current;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+    localStreamRef.current = stream;
+    setCallState((prev) => ({ ...prev, localStream: stream }));
+    return stream;
+  }, []);
+
+  const setupPeerConnection = useCallback((pc) => {
+    if (!pc) {
+      return;
+    }
+    pc.onicecandidate = (event) => {
+      if (event.candidate && currentSessionRef.current) {
+        const candidateText = (event.candidate.candidate || '').trim();
+        if (!candidateText) {
+          return;
+        }
+        const payload = {
+          candidate: candidateText,
+          sdp_mid: event.candidate.sdpMid || '',
+          from: session.email,
+        };
+        if (typeof event.candidate.sdpMLineIndex === 'number') {
+          payload.sdp_m_line_index = event.candidate.sdpMLineIndex;
+        }
+        rtcFetch(`/sessions/${encodeURIComponent(currentSessionRef.current)}/candidates`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }).catch((err) => {
+          console.debug('candidate publish failed', err);
+        });
+      }
+    };
+    pc.ontrack = (event) => {
+      const [stream] = event.streams || [];
+      if (stream) {
+        remoteStreamRef.current = stream;
+        setCallState((prev) => ({ ...prev, remoteStream: stream }));
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        setCallState((prev) => ({ ...prev, status: 'in-call' }));
+      } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+        cleanupCall({ notify: false });
+      }
+    };
+  }, [cleanupCall, rtcFetch, session.email]);
+
+  const processSessionUpdate = useCallback(async (sessionPayload) => {
+    if (!sessionPayload) {
+      return;
+    }
+    const pc = peerConnectionRef.current;
+    if (!pc) {
+      return;
+    }
+    if (callStateRef.current.role === 'caller' && sessionPayload.answer && (!pc.currentRemoteDescription || pc.currentRemoteDescription.type !== 'answer')) {
+      try {
+        await pc.setRemoteDescription({
+          type: sessionPayload.answer.type || 'answer',
+          sdp: sessionPayload.answer.sdp,
+        });
+        setCallState((prev) => ({ ...prev, status: 'connecting' }));
+      } catch (err) {
+        console.error('Failed to set remote answer', err);
+      }
+    }
+    if (sessionPayload.candidates) {
+      Object.entries(sessionPayload.candidates).forEach(([email, entries]) => {
+        if (normalizeEmail(email) === normalizedCurrentUser) {
+          return;
+        }
+        entries.forEach((candidate) => {
+          const fingerprint = `${email}:${candidate.candidate}:${candidate.sdp_mid || ''}:${candidate.sdp_m_line_index ?? ''}`;
+          if (seenCandidatesRef.current.has(fingerprint)) {
+            return;
+          }
+          seenCandidatesRef.current.add(fingerprint);
+          pc.addIceCandidate({
+            candidate: candidate.candidate,
+            sdpMid: candidate.sdp_mid || undefined,
+            sdpMLineIndex: typeof candidate.sdp_m_line_index === 'number' ? candidate.sdp_m_line_index : undefined,
+          }).catch((err) => console.debug('addIceCandidate failed', err));
+        });
+      });
+    }
+  }, [normalizedCurrentUser]);
+
+  const beginSessionPolling = useCallback((sessionId) => {
+    if (!sessionId) {
+      return;
+    }
+    if (sessionPollRef.current) {
+      clearInterval(sessionPollRef.current);
+    }
+    const poll = async () => {
+      try {
+        const data = await rtcFetch(`/sessions/${encodeURIComponent(sessionId)}?participant=${encodeURIComponent(session.email)}`);
+        if (data?.session) {
+          await processSessionUpdate(data.session);
+        }
+        if (data?.turn && !callStateRef.current.turn) {
+          setCallState((prev) => ({ ...prev, turn: data.turn }));
+        }
+      } catch (err) {
+        console.debug('session poll failed', err);
+      }
+    };
+    poll();
+    sessionPollRef.current = window.setInterval(poll, 2000);
+  }, [processSessionUpdate, rtcFetch, session.email]);
+
+  const startCall = useCallback(async () => {
+    if (!selectedConversationId) {
+      setSystemNote('Select a conversation to start a call.');
+      return;
+    }
+    if (callStateRef.current.status !== 'idle') {
+      setSystemNote('You are already in a call.');
+      return;
+    }
+    try {
+      const conversation = conversations.find((conv) => conv.id === selectedConversationId);
+      const localStream = await ensureLocalStream();
+      const payload = await rtcFetch('/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          conversation_id: selectedConversationId,
+          initiator: session.email,
+        }),
+      });
+      const rtcSession = payload.session;
+      const turn = payload.turn;
+      const peerConnection = new RTCPeerConnection({
+        iceServers: turn?.urls?.length ? [{
+          urls: turn.urls,
+          username: turn.username,
+          credential: turn.credential,
+        }] : [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+      peerConnectionRef.current = peerConnection;
+      currentSessionRef.current = rtcSession.id;
+      setupPeerConnection(peerConnection);
+      localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+      const stateUpdate = {
+        status: 'calling',
+        sessionId: rtcSession.id,
+        conversationId: selectedConversationId,
+        role: 'caller',
+        peerEmail: (conversation?.participants || []).find((p) => normalizeEmail(p) !== normalizedCurrentUser) || '',
+        peerName: conversation ? conversationDisplayName(conversation) : 'Participant',
+        localStream,
+        remoteStream: null,
+        turn,
+      };
+      callStateRef.current = stateUpdate;
+      setCallState(stateUpdate);
+      const offer = await peerConnection.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      await peerConnection.setLocalDescription(offer);
+      await rtcFetch(`/sessions/${encodeURIComponent(rtcSession.id)}/offer`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          sdp: offer.sdp,
+          type: offer.type,
+          from: session.email,
+        }),
+      });
+      sendRtcSignal(selectedConversationId, {
+        kind: 'invite',
+        session_id: rtcSession.id,
+        from: session.email,
+        display_name: conversation ? conversationDisplayName(conversation) : session.email,
+      });
+      beginSessionPolling(rtcSession.id);
+    } catch (err) {
+      console.error('start call failed', err);
+      setSystemNote('Unable to start video call.');
+      cleanupCall({ notify: false });
+    }
+  }, [beginSessionPolling, cleanupCall, conversations, conversationDisplayName, ensureLocalStream, normalizedCurrentUser, rtcFetch, selectedConversationId, sendRtcSignal, session.email]);
+
+  const acceptCall = useCallback(async () => {
+    if (callStateRef.current.status !== 'incoming') {
+      return;
+    }
+    try {
+      const localStream = await ensureLocalStream();
+      const data = await rtcFetch(`/sessions/${encodeURIComponent(callStateRef.current.sessionId)}?participant=${encodeURIComponent(session.email)}`);
+      const rtcSession = data.session;
+      const turn = data.turn;
+      if (!rtcSession?.offer) {
+        throw new Error('Missing offer');
+      }
+      const peerConnection = new RTCPeerConnection({
+        iceServers: turn?.urls?.length ? [{
+          urls: turn.urls,
+          username: turn.username,
+          credential: turn.credential,
+        }] : [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+      peerConnectionRef.current = peerConnection;
+      currentSessionRef.current = callStateRef.current.sessionId;
+      setupPeerConnection(peerConnection);
+      localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+      await peerConnection.setRemoteDescription({
+        type: rtcSession.offer.type || 'offer',
+        sdp: rtcSession.offer.sdp,
+      });
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      await rtcFetch(`/sessions/${encodeURIComponent(callStateRef.current.sessionId)}/answer`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          sdp: answer.sdp,
+          type: answer.type,
+          from: session.email,
+        }),
+      });
+      sendRtcSignal(callStateRef.current.conversationId, {
+        kind: 'accept',
+        session_id: callStateRef.current.sessionId,
+        from: session.email,
+      });
+      const nextState = {
+        ...callStateRef.current,
+        status: 'connecting',
+        localStream,
+        turn,
+      };
+      callStateRef.current = nextState;
+      setCallState(nextState);
+      beginSessionPolling(callStateRef.current.sessionId);
+    } catch (err) {
+      console.error('accept call failed', err);
+      setSystemNote('Unable to accept call.');
+      sendRtcSignal(callStateRef.current.conversationId, {
+        kind: 'decline',
+        session_id: callStateRef.current.sessionId,
+        from: session.email,
+      });
+      cleanupCall({ notify: false });
+    }
+  }, [beginSessionPolling, cleanupCall, ensureLocalStream, rtcFetch, sendRtcSignal, session.email]);
+
+  const rejectCall = useCallback(() => {
+    if (callStateRef.current.status !== 'incoming') {
+      return;
+    }
+    sendRtcSignal(callStateRef.current.conversationId, {
+      kind: 'decline',
+      session_id: callStateRef.current.sessionId,
+      from: session.email,
+    });
+    cleanupCall({ notify: false });
+  }, [cleanupCall, sendRtcSignal, session.email]);
+
+  const endCall = useCallback(() => {
+    if (callStateRef.current.status === 'idle') {
+      return;
+    }
+    cleanupCall({ notify: true });
+  }, [cleanupCall]);
+
+  const handleRtcSignal = useCallback((signal, meta) => {
+    if (!signal || !signal.kind || !signal.session_id) {
+      return;
+    }
+    const normalizedFrom = normalizeEmail(signal.from || meta?.from || '');
+    if (!signal.conversation_id) {
+      return;
+    }
+    if (signal.kind === 'invite') {
+      if (callStateRef.current.status !== 'idle') {
+        sendRtcSignal(signal.conversation_id, {
+          kind: 'busy',
+          session_id: signal.session_id,
+          from: session.email,
+        });
+        return;
+      }
+      const conversation = conversations.find((conv) => conv.id === signal.conversation_id);
+      const nextState = {
+        status: 'incoming',
+        sessionId: signal.session_id,
+        conversationId: signal.conversation_id,
+        role: 'callee',
+        peerEmail: normalizedFrom,
+        peerName: signal.display_name || (conversation ? conversationDisplayName(conversation) : signal.from || 'Caller'),
+        localStream: null,
+        remoteStream: null,
+        turn: null,
+      };
+      callStateRef.current = nextState;
+      setCallState(nextState);
+      if (!selectedConversationRef.current) {
+        setSelectedConversationId(signal.conversation_id);
+      }
+      return;
+    }
+
+    if (signal.kind === 'accept' && callStateRef.current.role === 'caller' && signal.session_id === callStateRef.current.sessionId) {
+      setCallState((prev) => ({ ...prev, status: 'connecting' }));
+      return;
+    }
+
+    if (signal.kind === 'decline' && signal.session_id === callStateRef.current.sessionId) {
+      setSystemNote('Call declined.');
+      cleanupCall({ notify: false });
+      return;
+    }
+
+    if (signal.kind === 'busy' && signal.session_id === callStateRef.current.sessionId) {
+      setSystemNote('User is on another call.');
+      cleanupCall({ notify: false });
+      return;
+    }
+
+    if (signal.kind === 'end' && signal.session_id === callStateRef.current.sessionId) {
+      cleanupCall({ notify: false });
+    }
+  }, [cleanupCall, conversationDisplayName, conversations, sendRtcSignal, session.email]);
+
+  const rtcSignalHandlerRef = useRef(() => {});
+
+  useEffect(() => {
+    rtcSignalHandlerRef.current = handleRtcSignal;
+  }, [handleRtcSignal]);
+
+  useEffect(() => {
+    const element = localVideoRef.current;
+    if (!element) {
+      return;
+    }
+    element.srcObject = callState.localStream || null;
+    if (callState.localStream) {
+      element.muted = true;
+      element.play().catch(() => {});
+    }
+  }, [callState.localStream]);
+
+  useEffect(() => {
+    const element = remoteVideoRef.current;
+    if (!element) {
+      return;
+    }
+    element.srcObject = callState.remoteStream || null;
+    if (callState.remoteStream) {
+      element.play().catch(() => {});
+    }
+  }, [callState.remoteStream]);
+
   useEffect(() => {
     loadConversations();
     loadUsers('');
@@ -394,8 +1015,9 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       }
       userAvatarCache.current.forEach((url) => URL.revokeObjectURL(url));
       convoAvatarCache.current.forEach((url) => URL.revokeObjectURL(url));
+      cleanupCall({ notify: false });
     };
-  }, [loadConversations, loadUsers]);
+  }, [cleanupCall, loadConversations, loadUsers]);
 
   useEffect(() => {
     if (!userSearch.trim()) {
@@ -422,6 +1044,12 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
           ws.send(JSON.stringify({ type: 'conversation', conversation_id: id }));
         }
       }
+      while (pendingSignals.current.length > 0) {
+        const payload = pendingSignals.current.shift();
+        if (payload) {
+          ws.send(payload);
+        }
+      }
     });
     ws.addEventListener('close', () => {
       setConnectionStatus('Disconnected');
@@ -437,15 +1065,34 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
             sent_at: payload.sent_at || new Date().toISOString(),
           };
           appendMessage(conversationId, entry);
+          const normalizedSender = normalizeEmail(entry.sender || '');
+          const isSelf = normalizedSender === normalizedCurrentUser;
+          const isActive = selectedConversationRef.current === conversationId;
+          const unreadOptions = isSelf || isActive ? { setUnread: 0 } : { incrementUnread: 1 };
           upsertConversation({
             id: conversationId,
             last_activity_at: entry.sent_at,
             lastMessagePreview: entry.text,
             participants: payload.participants || [],
             name: payload.conversation_name,
-          });
+            last_message: entry.text,
+            last_message_at: entry.sent_at,
+            last_sender: entry.sender,
+          }, unreadOptions);
+          if (isActive && !isSelf) {
+            markConversationRead(conversationId);
+          }
         } else if (payload.type === 'conversation' && payload.conversation) {
           upsertConversation(payload.conversation);
+        } else if (payload.type === 'rtc_signal' && payload.text) {
+          try {
+            const signal = JSON.parse(payload.text);
+            if (typeof rtcSignalHandlerRef.current === 'function') {
+              rtcSignalHandlerRef.current(signal, payload);
+            }
+          } catch (err) {
+            console.error('invalid rtc signal', err);
+          }
         }
       } catch (err) {
         console.error('invalid socket message', err);
@@ -454,7 +1101,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     return () => {
       ws.close();
     };
-  }, [accessToken, apiBase, appendMessage, upsertConversation]);
+  }, [accessToken, apiBase, appendMessage, markConversationRead, normalizedCurrentUser, upsertConversation]);
 
   const conversationMessages = messagesByConversation[selectedConversationId] || [];
   const selectedConversation = conversations.find((conv) => conv.id === selectedConversationId);
@@ -484,8 +1131,20 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
                 className="conversation-avatar"
               />
               <div className="conversation-text">
-                <span className="conversation-name">{conversationDisplayName(conversation)}</span>
-                <span className="conversation-meta">{new Date(conversation.last_activity_at || 0).toLocaleString()}</span>
+                <div className="conversation-title-row">
+                  <span className="conversation-name">{conversationDisplayName(conversation)}</span>
+                  <div className="conversation-meta-group">
+                    <span className="conversation-meta">
+                      {conversationLastActivityLabel(conversation) || '—'}
+                    </span>
+                    {conversation.unread_count > 0 && (
+                      <span className="unread-badge">
+                        {conversation.unread_count > 99 ? '99+' : conversation.unread_count}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className="conversation-preview">{conversationPreview(conversation)}</span>
               </div>
             </button>
           ))}
@@ -544,7 +1203,49 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
             <h2>{selectedConversation ? conversationDisplayName(selectedConversation) : 'Select a chat to begin'}</h2>
             <p className="chat-subtitle">Messages appear here</p>
           </div>
+          <div className="chat-actions">
+            <button
+              type="button"
+              onClick={startCall}
+              disabled={!selectedConversationId || callState.status !== 'idle'}
+            >
+              Start Video Call
+            </button>
+            {callState.status !== 'idle' && (
+              <button
+                type="button"
+                className="danger"
+                onClick={endCall}
+              >
+                Hang Up
+              </button>
+            )}
+          </div>
         </header>
+        {callState.status !== 'idle' && (
+          <div className="call-panel">
+            <div className="call-status-row">
+              <div>
+                <p className="call-status-label">{callStatusLabel(callState)}</p>
+                <p className="call-peer-name">{callState.peerName || callState.peerEmail || 'Participant'}</p>
+              </div>
+            </div>
+            <div className="video-stage">
+              <video ref={remoteVideoRef} className={`video-feed remote ${callState.remoteStream ? 'active' : ''}`} playsInline autoPlay />
+              <video ref={localVideoRef} className={`video-feed local ${callState.localStream ? 'active' : ''}`} playsInline autoPlay muted />
+            </div>
+            <div className="call-buttons">
+              {callState.status === 'incoming' ? (
+                <>
+                  <button type="button" onClick={acceptCall}>Accept</button>
+                  <button type="button" className="danger" onClick={rejectCall}>Decline</button>
+                </>
+              ) : (
+                <button type="button" className="danger" onClick={endCall}>Hang Up</button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="message-history">
           {conversationMessages.length === 0 && (
             <div className="message-row system">
