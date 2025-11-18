@@ -76,13 +76,24 @@ final class CallManager: NSObject, CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // TODO: Attach to rtc-service using currentSessionID and start WebRTC media.
-        print("Answering call for session \(currentSessionID ?? "nil")")
-        action.fulfill()
+        guard let sessionID = currentSessionID, let conversationID = currentConversationID, let remoteEmail = currentRemoteEmail else {
+            action.fail()
+            return
+        }
+        RTCClient.shared.joinAsCallee(sessionID: sessionID, conversationID: conversationID, remoteEmail: remoteEmail) { result in
+            switch result {
+            case .success:
+                print("RTC call started for session \(sessionID)")
+                action.fulfill()
+            case .failure(let error):
+                print("Failed to start RTC call: \(error)")
+                action.fail()
+            }
+        }
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        print("Ending call for session \(currentSessionID ?? "nil")")
+        RTCClient.shared.endCurrentCall()
         action.fulfill()
         currentCallUUID = nil
         currentConversationID = nil
@@ -91,4 +102,3 @@ final class CallManager: NSObject, CXProviderDelegate {
         currentDisplayName = nil
     }
 }
-
