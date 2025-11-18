@@ -370,7 +370,6 @@ func (a *apnsSender) SendVoIPInvite(evt *rtcRedisEvent, sig *rtcSignalPayload, d
 		Topic:       a.topic,
 		Payload:     data,
 	}
-	notification.PushType = apns2.PushType("voip")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
