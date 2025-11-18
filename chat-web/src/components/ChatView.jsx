@@ -510,10 +510,29 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
     }
 
     if (participants.length === 0) {
+      // Fallback: derive from message history.
+      const history = messagesByConversation[conversation.id] || [];
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const entry = history[i];
+        const sender = normalizeEmail(entry.sender || entry.from || '');
+        if (sender && sender !== normalizedCurrentUser) {
+          return sender;
+        }
+      }
       return 'Conversation';
     }
+
     const others = participants.filter((p) => normalizeEmail(p) !== normalizedCurrentUser);
     if (others.length === 0) {
+      // All participants match current user; try to infer from messages.
+      const history = messagesByConversation[conversation.id] || [];
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const entry = history[i];
+        const sender = normalizeEmail(entry.sender || entry.from || '');
+        if (sender && sender !== normalizedCurrentUser) {
+          return sender;
+        }
+      }
       return participants.join(', ');
     }
     if (others.length === 1) {
@@ -523,7 +542,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       return others.join(', ');
     }
     return 'Group chat';
-  }, [normalizedCurrentUser]);
+  }, [messagesByConversation, normalizedCurrentUser]);
 
   const primaryEmail = useCallback((conversation) => {
     if (!conversation) {
