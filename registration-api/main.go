@@ -11,646 +11,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
 	redis "github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 var (
-	db         *sql.DB
-	writer     *kafka.Writer
-	indexTmpl  *template.Template
-	chatTmpl   *template.Template
-	messageSvc *messageServiceClient
-	jwtSecret  []byte
-	redisClient *redis.Client
+	db               *sql.DB
+	writer           *kafka.Writer
+	messageSvc       *messageServiceClient
+	jwtSecret        []byte
+	redisClient      *redis.Client
+	allowedOrigins   []string
+	allowedOriginSet map[string]struct{}
+	allowAnyOrigin   bool
 )
-
-const indexTpl = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>OTP Login</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        form { margin-bottom: 24px; }
-        label { display: block; margin: 8px 0 4px; }
-        input[type="email"], input[type="text"] { width: 260px; padding: 8px; }
-        button { padding: 8px 16px; }
-        .message { color: green; }
-        .error { color: red; }
-    </style>
-</head>
-<body>
-    <h2>Request One-Time Password</h2>
-    {{if .Message}}<p class="message">{{.Message}}</p>{{end}}
-    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-    <form method="POST" action="/request-otp">
-        <label for="email">Email</label>
-        <input type="email" id="email" name="email" required>
-        <br><br>
-        <button type="submit">Send OTP</button>
-    </form>
-    <hr>
-    <h2>Verify OTP</h2>
-    <form method="POST" action="/verify-otp">
-        <label for="verify-email">Email</label>
-        <input type="email" id="verify-email" name="email" required>
-        <label for="otp">OTP Code</label>
-        <input type="text" id="otp" name="otp" maxlength="6" required>
-        <br><br>
-        <button type="submit">Verify &amp; Login</button>
-    </form>
-</body>
-</html>
-`
-
-const chatTpl = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Chat</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-        header { background: #2b579a; color: white; padding: 16px; }
-        header h2 { margin: 0 0 4px; }
-        header p { margin: 0; }
-        main { display: flex; height: calc(100vh - 64px); }
-        aside { width: 280px; border-right: 1px solid #ddd; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 24px; overflow-y: auto; }
-        .panel { display: flex; flex-direction: column; gap: 8px; }
-        .panel h3 { margin: 0; font-size: 1rem; }
-        #conversations, #users { list-style: none; padding: 0; margin: 0; }
-        #conversations li { padding: 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; margin-bottom: 6px; background: #f7f9fc; transition: background 0.2s, border 0.2s; }
-        #conversations li:hover { background: #eef2fb; }
-        #conversations li.active { background: #2b579a; color: #fff; border-color: #2b579a; }
-        #conversations li .conversation-name { font-weight: bold; }
-        #conversations li .conversation-meta { font-size: 0.8rem; opacity: 0.8; }
-        #conversations li.empty { cursor: default; background: none; border: none; color: #666; }
-        #users li { margin-bottom: 6px; }
-        #users li.you { color: #666; font-style: italic; }
-        #users label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-        #users input[type="checkbox"] { margin: 0; }
-        section { flex: 1; display: flex; flex-direction: column; padding: 16px; box-sizing: border-box; }
-        .conversation-header { margin-bottom: 12px; }
-        .conversation-header h3 { margin: 0; }
-        #history { flex: 1; border: 1px solid #ddd; padding: 12px; overflow-y: auto; margin-bottom: 12px; background: #fafafa; }
-        form { display: flex; gap: 8px; }
-        form input[type="text"] { flex: 1; padding: 10px; font-size: 1rem; }
-        form button { padding: 10px 16px; }
-        form button:disabled, form input[type="text"]:disabled { background: #e0e0e0; cursor: not-allowed; }
-        #status { margin: 0; color: #dbe4ff; font-size: 0.9rem; }
-        .self { text-align: right; color: #2b579a; }
-        .system { color: #888; font-style: italic; }
-        .hint { font-size: 0.85rem; color: #777; margin: 0; }
-    </style>
-</head>
-<body>
-    <header>
-        <h2>Welcome, {{.Email}}</h2>
-        <p id="status">Connecting to chat…</p>
-    </header>
-    <main>
-        <aside>
-            <div class="panel">
-                <h3>Chats</h3>
-                <ul id="conversations"></ul>
-            </div>
-            <div class="panel">
-                <h3>Start Chat</h3>
-                <p class="hint">Select one or more users to begin a chat.</p>
-                <input type="text" id="userSearch" placeholder="Search users…" style="padding: 6px; font-size: 0.9rem;">
-                <ul id="users"></ul>
-                <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px;">
-                    <input type="text" id="groupName" placeholder="Group name (optional)" style="padding: 6px; font-size: 0.9rem;">
-                    <input type="file" id="groupPhoto" accept="image/*" style="font-size: 0.85rem;">
-                </div>
-                <button type="button" id="createChatBtn">Create Chat</button>
-            </div>
-        </aside>
-        <section>
-            <div class="conversation-header">
-                <h3 id="conversationTitle">Select a chat to begin</h3>
-            </div>
-            <div id="history"></div>
-            <form id="messageForm">
-                <input type="text" id="message" placeholder="Type a message" required disabled>
-                <button type="submit" id="sendButton" disabled>Send</button>
-            </form>
-        </section>
-    </main>
-    <script>
-    function getCookie(name) {
-        const parts = document.cookie.split(';');
-        for (let i = 0; i < parts.length; i++) {
-            const part = parts[i].trim();
-            if (part.startsWith(name + '=')) {
-                return decodeURIComponent(part.substring(name.length + 1));
-            }
-        }
-        return '';
-    }
-
-    const token = getCookie('session_token');
-    const currentUser = {{printf "%q" .Email}};
-    const statusEl = document.getElementById('status');
-    const historyEl = document.getElementById('history');
-    const usersEl = document.getElementById('users');
-    const conversationsEl = document.getElementById('conversations');
-    const conversationTitleEl = document.getElementById('conversationTitle');
-    const form = document.getElementById('messageForm');
-    const messageInput = document.getElementById('message');
-    const sendButton = document.getElementById('sendButton');
-    const userSearchEl = document.getElementById('userSearch');
-    const groupNameEl = document.getElementById('groupName');
-    const groupPhotoEl = document.getElementById('groupPhoto');
-    const createChatBtn = document.getElementById('createChatBtn');
-
-    const conversations = new Map();
-    const messagesByConversation = new Map();
-    const pendingAnnouncements = [];
-    let selectedConversationId = '';
-    let socket = null;
-
-    function formatTimestamp(ts) {
-        if (!ts) {
-            return '';
-        }
-        const date = new Date(ts);
-        if (Number.isNaN(date.getTime())) {
-            return '';
-        }
-        return date.toLocaleString();
-    }
-
-    function conversationDisplayName(conv) {
-        if (!conv) {
-            return 'Conversation';
-        }
-        if (conv.name && conv.name.trim()) {
-            return conv.name;
-        }
-        if (Array.isArray(conv.participants)) {
-            const others = conv.participants.filter((p) => p !== currentUser);
-            if (others.length === 0) {
-                return conv.participants.join(', ');
-            }
-            if (others.length === 1) {
-                return others[0];
-            }
-            if (others.length === 2) {
-                return others.join(', ');
-            }
-            return 'Group chat';
-        }
-        return 'Conversation';
-    }
-
-    function upsertConversation(conv, shouldRender = true) {
-        if (!conv || !conv.id) {
-            return;
-        }
-        const existing = conversations.get(conv.id) || {};
-        const participants = Array.isArray(conv.participants) && conv.participants.length > 0
-            ? conv.participants.slice()
-            : (existing.participants || []);
-        const merged = {
-            id: conv.id,
-            name: conv.name && conv.name.trim() ? conv.name : (existing.name || ''),
-            participants: participants,
-            last_activity_at: conv.last_activity_at || existing.last_activity_at || new Date().toISOString()
-        };
-        conversations.set(conv.id, merged);
-        if (!messagesByConversation.has(conv.id)) {
-            messagesByConversation.set(conv.id, []);
-        }
-        if (shouldRender) {
-            renderConversations();
-        }
-    }
-
-    function renderConversations() {
-        const items = Array.from(conversations.values()).sort((a, b) => {
-            return new Date(b.last_activity_at || 0) - new Date(a.last_activity_at || 0);
-        });
-        conversationsEl.innerHTML = '';
-        if (items.length === 0) {
-            const empty = document.createElement('li');
-            empty.className = 'empty';
-            empty.textContent = 'No chats yet';
-            conversationsEl.appendChild(empty);
-            return;
-        }
-        items.forEach((conv) => {
-            const li = document.createElement('li');
-            li.dataset.id = conv.id;
-            if (conv.id === selectedConversationId) {
-                li.classList.add('active');
-            }
-            const nameDiv = document.createElement('div');
-            nameDiv.className = 'conversation-name';
-            nameDiv.textContent = conversationDisplayName(conv);
-            const metaDiv = document.createElement('div');
-            metaDiv.className = 'conversation-meta';
-            metaDiv.textContent = formatTimestamp(conv.last_activity_at);
-            li.appendChild(nameDiv);
-            li.appendChild(metaDiv);
-            li.addEventListener('click', () => {
-                selectConversation(conv.id);
-            });
-            conversationsEl.appendChild(li);
-        });
-    }
-
-    async function loadAllUsers(query = '') {
-        try {
-            let url = '/api/users/all';
-            if (query && query.trim()) {
-                url += '?q=' + encodeURIComponent(query.trim());
-            }
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error('Unable to load users');
-            }
-            const data = await response.json();
-            const list = Array.isArray(data.users) ? data.users : [];
-            renderUsers(list);
-        } catch (err) {
-            console.error(err);
-            renderUsers([]);
-        }
-    }
-
-    function renderUsers(users) {
-        const previouslySelected = new Set(Array.from(usersEl.querySelectorAll('input[type="checkbox"]:checked')).map((cb) => cb.dataset.email));
-        usersEl.innerHTML = '';
-        const sorted = Array.isArray(users) ? users.slice().sort((a, b) => {
-            const nameA = (a.name || a.email || '').toLowerCase();
-            const nameB = (b.name || b.email || '').toLowerCase();
-            if (nameA < nameB) return -1;
-            if (nameA > nameB) return 1;
-            return 0;
-        }) : [];
-        let hasSelectable = false;
-        sorted.forEach((user) => {
-            const email = user.email || '';
-            if (!email) {
-                return;
-            }
-            const li = document.createElement('li');
-            const isCurrentUser = email === currentUser;
-
-            const label = document.createElement('label');
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.dataset.email = email;
-            if (previouslySelected.has(email)) {
-                checkbox.checked = true;
-            }
-
-            const avatar = document.createElement('img');
-            avatar.className = 'avatar';
-            if (user.has_avatar) {
-                avatar.src = '/api/users/photo?email=' + encodeURIComponent(email);
-            }
-
-            const textSpan = document.createElement('span');
-            const displayName = user.name && user.name.trim() ? user.name.trim() : email;
-            textSpan.textContent = isCurrentUser ? (displayName + ' (you)') : displayName;
-
-            if (!isCurrentUser) {
-                hasSelectable = true;
-                label.appendChild(checkbox);
-            } else {
-                li.classList.add('you');
-            }
-            label.appendChild(avatar);
-            label.appendChild(textSpan);
-            li.appendChild(label);
-            usersEl.appendChild(li);
-        });
-        if (!hasSelectable) {
-            const empty = document.createElement('li');
-            empty.classList.add('empty');
-            empty.textContent = 'No other users available';
-            usersEl.appendChild(empty);
-        }
-    }
-
-    async function selectConversation(conversationId) {
-        if (!conversationId || !conversations.has(conversationId)) {
-            return;
-        }
-        selectedConversationId = conversationId;
-        renderConversations();
-        const conv = conversations.get(conversationId);
-        conversationTitleEl.textContent = conversationDisplayName(conv);
-        messageInput.disabled = false;
-        sendButton.disabled = false;
-        if (!messagesByConversation.has(conversationId) || messagesByConversation.get(conversationId).length === 0) {
-            await loadMessages(conversationId);
-        }
-        renderMessages(conversationId);
-    }
-
-    async function loadMessages(conversationId) {
-        try {
-            const response = await fetch('/api/conversations/' + encodeURIComponent(conversationId) + '/messages');
-            if (!response.ok) {
-                throw new Error('Unable to load messages');
-            }
-            const data = await response.json();
-            const list = Array.isArray(data.messages) ? data.messages : [];
-            messagesByConversation.set(conversationId, list);
-            if (list.length > 0) {
-                const last = list[list.length - 1];
-                upsertConversation({ id: conversationId, last_activity_at: last.sent_at }, false);
-                renderConversations();
-            }
-        } catch (err) {
-            console.error(err);
-            addSystemNote('Unable to load messages for this chat.');
-        }
-    }
-
-    function renderMessages(conversationId) {
-        if (conversationId !== selectedConversationId) {
-            return;
-        }
-        const list = messagesByConversation.get(conversationId) || [];
-        historyEl.innerHTML = '';
-        if (list.length === 0) {
-            const empty = document.createElement('div');
-            empty.classList.add('system');
-            empty.textContent = 'No messages yet. Say hello!';
-            historyEl.appendChild(empty);
-            return;
-        }
-        list.forEach((msg) => {
-            const item = document.createElement('div');
-            const ts = formatTimestamp(msg.sent_at);
-            const from = msg.sender || 'system';
-            item.textContent = '[' + ts + '] ' + from + ': ' + (msg.text || '');
-            if (from === currentUser) {
-                item.classList.add('self');
-            } else if (!msg.sender) {
-                item.classList.add('system');
-            }
-            historyEl.appendChild(item);
-        });
-        historyEl.scrollTop = historyEl.scrollHeight;
-    }
-
-    function appendMessage(conversationId, message) {
-        const list = messagesByConversation.get(conversationId);
-        if (list) {
-            list.push(message);
-        } else {
-            messagesByConversation.set(conversationId, [message]);
-        }
-        if (conversationId === selectedConversationId) {
-            renderMessages(conversationId);
-        }
-    }
-
-    function addSystemNote(text) {
-        const item = document.createElement('div');
-        item.textContent = text;
-        item.classList.add('system');
-        historyEl.appendChild(item);
-        historyEl.scrollTop = historyEl.scrollHeight;
-    }
-
-    function announceConversation(conversationId) {
-        if (!conversationId) {
-            return;
-        }
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'conversation', conversation_id: conversationId }));
-        } else {
-            pendingAnnouncements.push(conversationId);
-        }
-    }
-
-    async function fetchConversations() {
-        try {
-            const response = await fetch('/api/conversations');
-            if (!response.ok) {
-                throw new Error('Unable to load conversations');
-            }
-            const data = await response.json();
-            const list = Array.isArray(data.conversations) ? data.conversations : [];
-            conversations.clear();
-            messagesByConversation.clear();
-            list.forEach((conv) => {
-                upsertConversation(conv, false);
-            });
-            renderConversations();
-            if (list.length === 0) {
-                conversationTitleEl.textContent = 'Create a chat to get started';
-                historyEl.innerHTML = '';
-                addSystemNote('No chats yet.');
-                messageInput.disabled = true;
-                sendButton.disabled = true;
-                return;
-            }
-            for (const conv of list) {
-                await loadMessages(conv.id);
-            }
-            await selectConversation(list[0].id);
-        } catch (err) {
-            console.error(err);
-            addSystemNote('Unable to load conversations. Please refresh the page.');
-        }
-    }
-
-    createChatBtn.addEventListener('click', async () => {
-        const selected = Array.from(usersEl.querySelectorAll('input[type="checkbox"]:checked')).map((cb) => cb.dataset.email);
-        if (selected.length === 0) {
-            addSystemNote('Select at least one user to start a chat.');
-            return;
-        }
-        createChatBtn.disabled = true;
-        try {
-            let name = '';
-            if (groupNameEl && groupNameEl.value && groupNameEl.value.trim()) {
-                name = groupNameEl.value.trim();
-            } else if (selected.length > 1) {
-                name = 'Group chat (' + (selected.length + 1) + ' participants)';
-            }
-
-            const payload = {
-                name: name,
-                participants: selected
-            };
-            const res = await fetch('/api/conversations', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                const message = data && data.error ? data.error : 'Unable to create chat';
-                throw new Error(message);
-            }
-            const conversation = data.conversation || data;
-            upsertConversation(conversation);
-            renderConversations();
-            messagesByConversation.set(conversation.id, []);
-
-            // If a group photo is selected, upload it.
-            if (groupPhotoEl && groupPhotoEl.files && groupPhotoEl.files[0]) {
-                const file = groupPhotoEl.files[0];
-                try {
-                    const photoRes = await fetch('/api/conversations/' + encodeURIComponent(conversation.id) + '/photo', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': file.type || 'image/jpeg'
-                        },
-                        body: file
-                    });
-                    if (!photoRes.ok) {
-                        console.error('Group photo upload failed with status', photoRes.status);
-                    }
-                } catch (err) {
-                    console.error('Group photo upload failed', err);
-                }
-            }
-
-            await selectConversation(conversation.id);
-            announceConversation(conversation.id);
-            Array.from(usersEl.querySelectorAll('input[type="checkbox"]')).forEach((cb) => { cb.checked = false; });
-            if (groupNameEl) {
-                groupNameEl.value = '';
-            }
-            if (groupPhotoEl) {
-                groupPhotoEl.value = '';
-            }
-        } catch (err) {
-            addSystemNote(err.message || 'Unable to create chat.');
-        } finally {
-            createChatBtn.disabled = false;
-        }
-    });
-
-    form.addEventListener('submit', (event) => {
-        event.preventDefault();
-        if (!selectedConversationId) {
-            addSystemNote('Select a chat before sending a message.');
-            return;
-        }
-        const text = messageInput.value.trim();
-        if (!text) {
-            return;
-        }
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-            addSystemNote('Connection lost. Please refresh the page.');
-            return;
-        }
-        const payload = {
-            type: 'message',
-            conversation_id: selectedConversationId,
-            text: text
-        };
-        socket.send(JSON.stringify(payload));
-        messageInput.value = '';
-    });
-
-    if (userSearchEl) {
-        userSearchEl.addEventListener('input', () => {
-            const q = userSearchEl.value || '';
-            loadAllUsers(q);
-        });
-    }
-
-    if (!token) {
-        statusEl.textContent = 'Missing session token. Please sign in again.';
-        addSystemNote('Missing session token. Please sign in again.');
-    } else {
-        renderUsers([]);
-        fetchConversations();
-        const isSecure = window.location.protocol === 'https:';
-        const protocol = isSecure ? 'wss://' : 'ws://';
-        const host = isSecure ? 'ws.manchik.co.uk' : (window.location.hostname + ':8083');
-        const wsURL = protocol + host + '/ws?token=' + encodeURIComponent(token);
-        socket = new WebSocket(wsURL);
-
-        socket.addEventListener('open', () => {
-            statusEl.textContent = 'Connected as ' + currentUser;
-            while (pendingAnnouncements.length > 0) {
-                const id = pendingAnnouncements.shift();
-                if (id) {
-                    announceConversation(id);
-                }
-            }
-        });
-
-        socket.addEventListener('close', () => {
-            statusEl.textContent = 'Disconnected';
-            sendButton.disabled = true;
-            messageInput.disabled = true;
-        });
-
-        socket.addEventListener('message', (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'presence' && Array.isArray(msg.users)) {
-                    renderUsers(msg.users);
-                } else if (msg.type === 'message') {
-                    const conversationId = msg.conversation_id;
-                    if (conversationId) {
-                        upsertConversation({
-                            id: conversationId,
-                            name: msg.conversation_name || '',
-                            last_activity_at: msg.sent_at || new Date().toISOString()
-                        });
-                        const entry = {
-                            sender: msg.from,
-                            text: msg.text || '',
-                            sent_at: msg.sent_at || new Date().toISOString()
-                        };
-                        appendMessage(conversationId, entry);
-                    }
-                } else if (msg.type === 'conversation') {
-                    if (msg.conversation) {
-                        upsertConversation(msg.conversation);
-                    } else if (msg.conversation_id) {
-                        upsertConversation({
-                            id: msg.conversation_id,
-                            name: msg.conversation_name || '',
-                            last_activity_at: msg.sent_at || new Date().toISOString()
-                        });
-                    }
-                    renderConversations();
-                } else if (msg.type === 'error') {
-                    addSystemNote(msg.error || 'Unknown error');
-                }
-            } catch (err) {
-                console.error('Invalid message received', err);
-            }
-        });
-    }
-    </script>
-</body>
-</html>
-`
-
-type indexPageData struct {
-	Message string
-	Error   string
-}
 
 type session struct {
 	Token     string
@@ -717,18 +103,12 @@ func main() {
 	}
 
 	messageSvc = newMessageServiceClient(messageSvcURL)
-
-	indexTmpl = template.Must(template.New("index").Parse(indexTpl))
-	chatTmpl = template.Must(template.New("chat").Parse(chatTpl))
+	configureAllowedOrigins()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleIndex)
-	mux.HandleFunc("/register", handleIndex)
-	mux.HandleFunc("/request-otp", handleRequestOTP)
-	mux.HandleFunc("/verify-otp", handleVerifyOTP)
+	mux.HandleFunc("/", handleHealth)
 	mux.HandleFunc("/api/request-otp", handleAPIRequestOTP)
 	mux.HandleFunc("/api/verify-otp", handleAPIVerifyOTP)
-	mux.HandleFunc("/chat", handleChat)
 	mux.HandleFunc("/api/conversations", handleAPIConversations)
 	mux.HandleFunc("/api/conversations/", handleAPIConversationResource)
 	mux.HandleFunc("/api/device", handleRegisterDevice)
@@ -741,7 +121,7 @@ func main() {
 	mux.HandleFunc("/api/users/photo", handleAPIUserPhoto)
 
 	fmt.Println("Registration API running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(http.ListenAndServe(":8080", corsMiddleware(mux)))
 }
 
 func ensureSchema() error {
@@ -949,44 +329,11 @@ func handleAssociateDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	data := indexPageData{}
-	if msg := r.URL.Query().Get("msg"); msg != "" {
-		data.Message = msg
-	}
-	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
-		data.Error = errMsg
-	}
-	if err := indexTmpl.Execute(w, data); err != nil {
-		log.Printf("index template error: %v", err)
-		http.Error(w, "Template error", http.StatusInternalServerError)
-	}
-}
-
-func handleRequestOTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/?error="+urlQuery("Invalid form submission"), http.StatusSeeOther)
-		return
-	}
-
-	email := strings.TrimSpace(r.FormValue("email"))
-	if email == "" {
-		http.Redirect(w, r, "/?error="+urlQuery("Email is required"), http.StatusSeeOther)
-		return
-	}
-
-	msg := kafka.Message{Value: []byte(email)}
-	if err := writer.WriteMessages(r.Context(), msg); err != nil {
-		log.Printf("Kafka write error: %v", err)
-		http.Redirect(w, r, "/?error="+urlQuery("Unable to queue OTP email"), http.StatusSeeOther)
-		return
-	}
-
-	http.Redirect(w, r, "/?msg="+urlQuery("OTP sent if the email exists"), http.StatusSeeOther)
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "Chat API ready",
+	})
 }
 
 func handleAPIRequestOTP(w http.ResponseWriter, r *http.Request) {
@@ -1019,46 +366,6 @@ func handleAPIRequestOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/?error="+urlQuery("Invalid form submission"), http.StatusSeeOther)
-		return
-	}
-
-	email := strings.TrimSpace(r.FormValue("email"))
-	code := strings.TrimSpace(r.FormValue("otp"))
-	if email == "" || code == "" {
-		http.Redirect(w, r, "/?error="+urlQuery("Email and OTP are required"), http.StatusSeeOther)
-		return
-	}
-
-	if err := verifyOTP(email, code); err != nil {
-		http.Redirect(w, r, "/?error="+urlQuery(err.Error()), http.StatusSeeOther)
-		return
-	}
-
-	token, expiresAt, err := createSession(email)
-	if err != nil {
-		log.Printf("session creation error: %v", err)
-		http.Redirect(w, r, "/?error="+urlQuery("Unable to create session"), http.StatusSeeOther)
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
-		Value:    token,
-		Path:     "/",
-		Expires:  expiresAt,
-		SameSite: http.SameSiteLaxMode,
-	})
-
-	http.Redirect(w, r, "/chat", http.StatusSeeOther)
 }
 
 func handleAPIVerifyOTP(w http.ResponseWriter, r *http.Request) {
@@ -1205,10 +512,10 @@ func handleAPIProfilePhoto(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var (
-			data           []byte
-			contentType    sql.NullString
-			name           sql.NullString
-			lastUpdated    time.Time
+			data        []byte
+			contentType sql.NullString
+			name        sql.NullString
+			lastUpdated time.Time
 		)
 
 		err := db.QueryRow(
@@ -1371,8 +678,8 @@ func handleAPIUsersAll(w http.ResponseWriter, r *http.Request) {
 	users := make([]userSummary, 0, 64)
 	for rows.Next() {
 		var (
-			email string
-			name  string
+			email  string
+			name   string
 			avatar []byte
 		)
 		if err := rows.Scan(&email, &name, &avatar); err != nil {
@@ -1390,19 +697,6 @@ func handleAPIUsersAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
-}
-
-func handleChat(w http.ResponseWriter, r *http.Request) {
-	sess, err := getSessionFromRequest(r)
-	if err != nil {
-		http.Redirect(w, r, "/?error="+urlQuery("Please verify your OTP first"), http.StatusSeeOther)
-		return
-	}
-
-	if err := chatTmpl.Execute(w, struct{ Email string }{Email: sess.Email}); err != nil {
-		log.Printf("chat template error: %v", err)
-		http.Error(w, "Template error", http.StatusInternalServerError)
-	}
 }
 
 func handleAPIConversations(w http.ResponseWriter, r *http.Request) {
@@ -1444,7 +738,23 @@ func handleAPIConversations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		normalizedTarget := normalizeParticipantEmails(participants)
+
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		existing, err := messageSvc.ListConversations(ctx, sess.Email)
+		cancel()
+		if err != nil {
+			log.Printf("list conversations for match error: %v", err)
+		} else {
+			for _, conv := range existing {
+				if participantsMatch(conv.Participants, normalizedTarget) {
+					writeJSON(w, http.StatusOK, map[string]interface{}{"conversation": conv, "reused": true})
+					return
+				}
+			}
+		}
+
+		ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
 		conversation, err := messageSvc.CreateConversation(ctx, sess.Email, payload.Name, participants)
 		cancel()
 		if err != nil {
@@ -1820,6 +1130,64 @@ func parseJWT(token string) (string, time.Time, error) {
 	return claims.Sub, expiresAt, nil
 }
 
+func configureAllowedOrigins() {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		allowedOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173"}
+	} else {
+		parts := strings.Split(raw, ",")
+		for _, part := range parts {
+			origin := strings.TrimSpace(part)
+			if origin == "" {
+				continue
+			}
+			if origin == "*" {
+				allowAnyOrigin = true
+				allowedOrigins = nil
+				allowedOriginSet = nil
+				return
+			}
+			allowedOrigins = append(allowedOrigins, origin)
+		}
+	}
+	allowedOriginSet = make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowedOriginSet[origin] = struct{}{}
+	}
+}
+
+func isOriginAllowed(origin string) bool {
+	if allowAnyOrigin {
+		return true
+	}
+	if len(allowedOriginSet) == 0 {
+		return false
+	}
+	_, ok := allowedOriginSet[origin]
+	return ok
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && isOriginAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		} else if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func urlQuery(s string) string {
 	return url.QueryEscape(s)
 }
@@ -1860,13 +1228,13 @@ type createdMessage struct {
 }
 
 type chatRedisEvent struct {
-	Type             string           `json:"type"`
-	Participants     []string         `json:"participants"`
-	ConversationID   string           `json:"conversation_id,omitempty"`
-	ConversationName string           `json:"conversation_name,omitempty"`
-	From             string           `json:"from,omitempty"`
-	Text             string           `json:"text,omitempty"`
-	SentAt           string           `json:"sent_at,omitempty"`
+	Type             string            `json:"type"`
+	Participants     []string          `json:"participants"`
+	ConversationID   string            `json:"conversation_id,omitempty"`
+	ConversationName string            `json:"conversation_name,omitempty"`
+	From             string            `json:"from,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	SentAt           string            `json:"sent_at,omitempty"`
 	Conversation     *conversationView `json:"conversation,omitempty"`
 }
 
@@ -2196,4 +1564,38 @@ func contains(list []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeParticipantEmails(list []string) []string {
+	normalized := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, value := range list {
+		email := strings.ToLower(strings.TrimSpace(value))
+		if email == "" {
+			continue
+		}
+		if _, exists := seen[email]; exists {
+			continue
+		}
+		seen[email] = struct{}{}
+		normalized = append(normalized, email)
+	}
+	sort.Strings(normalized)
+	return normalized
+}
+
+func participantsMatch(participants []string, normalizedTarget []string) bool {
+	if len(normalizedTarget) == 0 {
+		return false
+	}
+	normalizedParticipants := normalizeParticipantEmails(participants)
+	if len(normalizedParticipants) != len(normalizedTarget) {
+		return false
+	}
+	for i := range normalizedParticipants {
+		if normalizedParticipants[i] != normalizedTarget[i] {
+			return false
+		}
+	}
+	return true
 }
