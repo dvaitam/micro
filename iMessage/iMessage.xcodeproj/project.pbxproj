@@ -6,8 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3F0BE0A191174F1F3434C379 /* Pods_iMessage.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 655FC982EEB7259AB1902112 /* Pods_iMessage.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		049E29532ECA2F0000FB2778 /* iMessage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iMessage.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		312D6F410F6C960E7FFC1AC2 /* Pods-iMessage.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-iMessage.release.xcconfig"; path = "Target Support Files/Pods-iMessage/Pods-iMessage.release.xcconfig"; sourceTree = "<group>"; };
+		655FC982EEB7259AB1902112 /* Pods_iMessage.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_iMessage.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		8AEBE80019ABA197E8BA993B /* Pods-iMessage.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-iMessage.debug.xcconfig"; path = "Target Support Files/Pods-iMessage/Pods-iMessage.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -36,6 +43,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3F0BE0A191174F1F3434C379 /* Pods_iMessage.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -47,6 +55,8 @@
 			children = (
 				049E29552ECA2F0000FB2778 /* iMessage */,
 				049E29542ECA2F0000FB2778 /* Products */,
+				187A7E6BB95E63C8C60F7355 /* Pods */,
+				B611513522318545AEEBE883 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -58,6 +68,24 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		187A7E6BB95E63C8C60F7355 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				8AEBE80019ABA197E8BA993B /* Pods-iMessage.debug.xcconfig */,
+				312D6F410F6C960E7FFC1AC2 /* Pods-iMessage.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
+		B611513522318545AEEBE883 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				655FC982EEB7259AB1902112 /* Pods_iMessage.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -65,9 +93,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 049E29662ECA2F0200FB2778 /* Build configuration list for PBXNativeTarget "iMessage" */;
 			buildPhases = (
+				F39403FBDBC697135540FA92 /* [CP] Check Pods Manifest.lock */,
 				049E294F2ECA2F0000FB2778 /* Sources */,
 				049E29502ECA2F0000FB2778 /* Frameworks */,
 				049E29512ECA2F0000FB2778 /* Resources */,
+				72769052F86CC0550F06B26B /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -77,8 +107,6 @@
 				049E29552ECA2F0000FB2778 /* iMessage */,
 			);
 			name = iMessage;
-			packageProductDependencies = (
-			);
 			productName = iMessage;
 			productReference = 049E29532ECA2F0000FB2778 /* iMessage.app */;
 			productType = "com.apple.product-type.application";
@@ -127,6 +155,48 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		72769052F86CC0550F06B26B /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-iMessage/Pods-iMessage-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-iMessage/Pods-iMessage-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-iMessage/Pods-iMessage-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		F39403FBDBC697135540FA92 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-iMessage-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		049E294F2ECA2F0000FB2778 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -140,6 +210,7 @@
 /* Begin XCBuildConfiguration section */
 		049E29672ECA2F0200FB2778 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8AEBE80019ABA197E8BA993B /* Pods-iMessage.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -149,6 +220,8 @@
 				DEVELOPMENT_TEAM = V35SKYR64Q;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iMessage/Info.plist;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to choose a profile picture.";
+				INFOPLIST_KEY_NSVoIPUsageDescription = "users can make audio/video calls";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -173,6 +246,7 @@
 		};
 		049E29682ECA2F0200FB2778 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 312D6F410F6C960E7FFC1AC2 /* Pods-iMessage.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -182,6 +256,8 @@
 				DEVELOPMENT_TEAM = V35SKYR64Q;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iMessage/Info.plist;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to choose a profile picture.";
+				INFOPLIST_KEY_NSVoIPUsageDescription = "users can make audio/video calls";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;

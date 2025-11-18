@@ -24,8 +24,8 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<string>voip</string>
+		<string>push-to-talk</string>
 	</array>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Allow access to choose a profile picture.</string>
 </dict>
 </plist>

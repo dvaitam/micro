@@ -15,6 +15,7 @@ import (
 	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	apnstoken "github.com/sideshow/apns2/token"
+	"github.com/redis/go-redis/v9"
 )
 
 type messageEvent struct {
@@ -44,6 +45,7 @@ type service struct {
 	reader *kafka.Reader
 	tokens *tokenStore
 	apns   *apnsSender
+	redis  *redis.Client
 }
 
 func main() {
@@ -81,6 +83,20 @@ func main() {
 	})
 	defer reader.Close()
 
+	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	var rdb *redis.Client
+	if redisAddr != "" {
+		rdb = redis.NewClient(&redis.Options{
+			Addr: redisAddr,
+		})
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			log.Printf("redis connection error: %v", err)
+			rdb = nil
+		}
+	} else {
+		log.Printf("REDIS_ADDR not set; rtc_signal VoIP pushes will be disabled")
+	}
+
 	apnsConfig, err := buildAPNSSender()
 	if err != nil {
 		log.Fatalf("apns setup error: %v", err)
@@ -90,9 +106,14 @@ func main() {
 		reader: reader,
 		tokens: &tokenStore{db: db},
 		apns:   apnsConfig,
+		redis:  rdb,
 	}
 
 	log.Printf("Push service listening on topic %s as %s", topic, groupID)
+
+	if srv.redis != nil {
+		go srv.runRedis(context.Background())
+	}
 	srv.run()
 }
 
@@ -147,6 +168,92 @@ func (s *service) processEvent(event *messageEvent) {
 			}
 		}
 	}
+}
+
+type rtcRedisEvent struct {
+	Type             string   `json:"type"`
+	Participants     []string `json:"participants"`
+	ConversationID   string   `json:"conversation_id,omitempty"`
+	ConversationName string   `json:"conversation_name,omitempty"`
+	From             string   `json:"from,omitempty"`
+	Text             string   `json:"text,omitempty"`
+}
+
+type rtcSignalPayload struct {
+	Kind        string `json:"kind"`
+	SessionID   string `json:"session_id"`
+	From        string `json:"from,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+func (s *service) runRedis(ctx context.Context) {
+	if s.redis == nil {
+		return
+	}
+	sub := s.redis.Subscribe(ctx, "chat:messages")
+	ch := sub.Channel()
+	log.Printf("Subscribed to redis channel chat:messages for rtc_signal events")
+	for msg := range ch {
+		var evt rtcRedisEvent
+		if err := json.Unmarshal([]byte(msg.Payload), &evt); err != nil {
+			log.Printf("invalid redis event: %v", err)
+			continue
+		}
+		if strings.TrimSpace(evt.Type) != "rtc_signal" {
+			continue
+		}
+		if err := s.processRtcSignal(ctx, &evt); err != nil {
+			log.Printf("process rtc_signal error: %v", err)
+		}
+	}
+}
+
+func (s *service) processRtcSignal(ctx context.Context, evt *rtcRedisEvent) error {
+	if evt == nil {
+		return nil
+	}
+	text := strings.TrimSpace(evt.Text)
+	if text == "" {
+		return nil
+	}
+
+	var sig rtcSignalPayload
+	if err := json.Unmarshal([]byte(text), &sig); err != nil {
+		return fmt.Errorf("invalid rtc_signal payload: %w", err)
+	}
+	if strings.TrimSpace(sig.Kind) != "invite" || strings.TrimSpace(sig.SessionID) == "" {
+		return nil
+	}
+
+	recipients := recipientsForRTC(evt)
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	for _, recipient := range recipients {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		tokens, err := s.tokens.TokensForUser(ctx, recipient)
+		cancel()
+		if err != nil {
+			log.Printf("rtc: token lookup error for %s: %v", recipient, err)
+			continue
+		}
+		if len(tokens) == 0 {
+			log.Printf("rtc: no device tokens for %s", recipient)
+			continue
+		}
+
+		for _, tk := range tokens {
+			switch strings.ToLower(tk.Platform) {
+			case "ios_voip":
+				if err := s.apns.SendVoIPInvite(evt, &sig, tk.Token); err != nil {
+					log.Printf("rtc: apns voip send error token=%s: %v", tk.Token, err)
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (ts *tokenStore) TokensForUser(ctx context.Context, email string) ([]deviceToken, error) {
@@ -245,6 +352,39 @@ func (a *apnsSender) Send(evt *messageEvent, deviceToken string) error {
 	return nil
 }
 
+func (a *apnsSender) SendVoIPInvite(evt *rtcRedisEvent, sig *rtcSignalPayload, deviceToken string) error {
+	if evt == nil || sig == nil {
+		return fmt.Errorf("nil rtc event or signal")
+	}
+
+	data := payload.NewPayload().
+		ContentAvailable().
+		Custom("kind", "rtc_invite").
+		Custom("conversation_id", evt.ConversationID).
+		Custom("from", sig.From).
+		Custom("display_name", sig.DisplayName).
+		Custom("session_id", sig.SessionID)
+
+	notification := &apns2.Notification{
+		DeviceToken: deviceToken,
+		Topic:       a.topic,
+		Payload:     data,
+	}
+	notification.PushType = apns2.PushTypeVoIP
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := a.client.PushWithContext(ctx, notification)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("apns voip status %d: %s", resp.StatusCode, resp.Reason)
+	}
+	return nil
+}
+
 func recipientsForEvent(evt *messageEvent) []string {
 	if evt == nil {
 		return nil
@@ -253,6 +393,21 @@ func recipientsForEvent(evt *messageEvent) []string {
 	for _, participant := range evt.Participants {
 		participant = strings.TrimSpace(participant)
 		if participant == "" || participant == evt.Sender {
+			continue
+		}
+		recipients = append(recipients, participant)
+	}
+	return recipients
+}
+
+func recipientsForRTC(evt *rtcRedisEvent) []string {
+	if evt == nil {
+		return nil
+	}
+	recipients := make([]string, 0, len(evt.Participants))
+	for _, participant := range evt.Participants {
+		participant = strings.TrimSpace(participant)
+		if participant == "" || participant == evt.From {
 			continue
 		}
 		recipients = append(recipients, participant)

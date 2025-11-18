@@ -24,3 +24,5 @@ xcuserdata/
 
 # Swift Package Manager
 .build/
+
+iMessage/Pods/

@@ -6,6 +6,7 @@ toolchain go1.24.10
 
 require (
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/redis/go-redis/v9 v9.16.0
 	github.com/segmentio/kafka-go v0.4.48
 	github.com/sideshow/apns2 v0.25.0
 )

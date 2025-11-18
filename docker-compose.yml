@@ -145,6 +145,7 @@ services:
       APNS_TEAM_ID: V35SKYR64Q
       APNS_TOPIC: uk.co.manchik.iMessage
       APNS_ENVIRONMENT: development
+      REDIS_ADDR: redis:6379
     depends_on:
       kafka:
         condition: service_started

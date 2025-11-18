@@ -61,6 +61,31 @@ final class ChatWebSocketManager {
         webSocketTask = nil
     }
 
+    func sendJSON(_ object: [String: Any]) {
+        guard let task = webSocketTask else {
+            print("\(logPrefix) sendJSON called with no active socket")
+            return
+        }
+        guard JSONSerialization.isValidJSONObject(object) else {
+            print("\(logPrefix) invalid JSON object for send")
+            return
+        }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: object, options: [])
+            guard let text = String(data: data, encoding: .utf8) else {
+                print("\(logPrefix) unable to encode JSON as UTF-8")
+                return
+            }
+            task.send(.string(text)) { error in
+                if let error = error {
+                    print("\(self.logPrefix) send error: \(error)")
+                }
+            }
+        } catch {
+            print("\(logPrefix) sendJSON encoding error: \(error)")
+        }
+    }
+
     private func openSocket(token: String) {
         var components = URLComponents()
         components.scheme = "wss"
@@ -129,6 +154,8 @@ final class ChatWebSocketManager {
                     NotificationCenter.default.post(name: .chatConversationUpdated, object: nil, userInfo: ["event": event])
                 case "presence":
                     NotificationCenter.default.post(name: .chatPresenceUpdated, object: nil, userInfo: ["event": event])
+                case "rtc_signal":
+                    NotificationCenter.default.post(name: .chatRtcSignalReceived, object: nil, userInfo: ["event": event])
                 default:
                     break
                 }
