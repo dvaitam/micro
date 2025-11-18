@@ -923,7 +923,8 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       return;
     }
     const normalizedFrom = normalizeEmail(signal.from || meta?.from || '');
-    if (!signal.conversation_id) {
+    const conversationId = signal.conversation_id || meta?.conversation_id;
+    if (!conversationId) {
       return;
     }
     if (signal.kind === 'invite') {
@@ -935,11 +936,11 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
         });
         return;
       }
-      const conversation = conversations.find((conv) => conv.id === signal.conversation_id);
+      const conversation = conversations.find((conv) => conv.id === conversationId);
       const nextState = {
         status: 'incoming',
         sessionId: signal.session_id,
-        conversationId: signal.conversation_id,
+        conversationId,
         role: 'callee',
         peerEmail: normalizedFrom,
         peerName: signal.display_name || (conversation ? conversationDisplayName(conversation) : signal.from || 'Caller'),
@@ -950,7 +951,7 @@ function ChatView({ apiBase, accessToken, session, onLogout }) {
       callStateRef.current = nextState;
       setCallState(nextState);
       if (!selectedConversationRef.current) {
-        setSelectedConversationId(signal.conversation_id);
+        setSelectedConversationId(conversationId);
       }
       return;
     }
