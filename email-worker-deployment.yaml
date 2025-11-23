@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert
+    kompose.version: 1.36.0 (ae2a39403)
+  labels:
+    io.kompose.service: email-worker
+  name: email-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: email-worker
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: kompose convert
+        kompose.version: 1.36.0 (ae2a39403)
+      labels:
+        io.kompose.service: email-worker
+    spec:
+      containers:
+        - env:
+            - name: KAFKA_URL
+              value: kafka:9092
+            - name: MAILGUN_API_KEY
+              value: ${MAILGUN_API_KEY}
+            - name: MAILGUN_DOMAIN
+              value: manchik.co.uk
+            - name: MYSQL_DSN
+              value: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+          image: local/email-worker:latest
+          imagePullPolicy: IfNotPresent
+          name: email-worker
+      restartPolicy: Always

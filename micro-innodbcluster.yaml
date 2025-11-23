@@ -1,0 +1,12 @@
+apiVersion: mysql.oracle.com/v2
+kind: InnoDBCluster
+metadata:
+  name: micro-mysql
+spec:
+  instances: 3
+  secretName: mysql-passwords
+  tlsUseSelfSigned: true
+
+  router:
+    instances: 1
+

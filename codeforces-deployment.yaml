@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforces
+  labels:
+    app: codeforces
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codeforces
+  template:
+    metadata:
+      labels:
+        app: codeforces
+    spec:
+      containers:
+        - name: codeforces
+          image: local/codeforces:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_DSN
+              value: postgres://postgres:orib98wBpwUr15btAqoF2PksuDMTtsfJfrMsnzFUVai2Wo87MzI4SWb1g7cOeakq@micro-postgres.default.svc.cluster.local:5432/postgres?sslmode=require
+          ports:
+            - containerPort: 8081
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20

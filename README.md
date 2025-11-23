@@ -60,3 +60,30 @@ The public TLS endpoints terminate on the host nginx instance:
 - If you need to adjust DSNs or ports, update `docker-compose.yml` and rebuild.
 - Redis pub/sub is only used for live traffic; message persistence or history is out of scope.
 - For TURN in production you’ll typically point `TURN_SERVER_URLS` at a public IP/DNS that routes to a hardened coturn instance and open the UDP relay range in your firewall—the built-in `localhost` defaults only work for local development on the same machine that runs Docker.
+
+### Accounts bulk dataset
+Use `scripts/create_accounts_dataset.sh` to provision an `accounts` database (table `account_records`) behind the `mysql` Kubernetes service and fill it with 300 million rows of random 30-digit account numbers plus an AES-encrypted zero payload.
+
+```bash
+scripts/create_accounts_dataset.sh
+```
+
+Override any of these via environment variables if needed:
+
+- `TOTAL_ROWS` (default `300000000`)
+- `CHUNK_SIZE` rows per batch inside MySQL (default `10000`)
+- `MYSQL_NAMESPACE`/`MYSQL_SERVICE`/`MYSQL_USER`/`MYSQL_PASSWORD`
+- `MYSQL_HOST`, `MYSQL_PORT`, `RUN_VIA_KUBECTL` (set to `false` when running inside the cluster)
+- `DATABASE_NAME`, `TABLE_NAME`, or `ENCRYPTION_KEY`
+
+The script shells into the cluster with `kubectl run ... --image=mysql:8.0` so make sure your kube-context points at the environment where the `mysql` service lives and that the user has privileges to create databases/tables.
+
+#### Running as a Job inside Kubernetes
+
+A Kustomize bundle under `k8s/accounts-loader-job` turns the script into a standalone `Job` that runs from the cluster network namespace (no nested `kubectl` calls required):
+
+```bash
+kubectl apply -k k8s/accounts-loader-job
+```
+
+This generates a ConfigMap from `scripts/create_accounts_dataset.sh`, mounts it into a `mysql:8.0` pod, and invokes the script with `RUN_VIA_KUBECTL=false` so it connects straight to the `mysql` service (`mysql.default.svc`). Tweak the environment variables in `k8s/accounts-loader-job/job.yaml` (e.g., `TOTAL_ROWS`, `MYSQL_PASSWORD`, or per-batch `CHUNK_SIZE`), then re-apply. Monitor with `kubectl logs job/accounts-loader -f` and clean up when finished via `kubectl delete -k k8s/accounts-loader-job`.

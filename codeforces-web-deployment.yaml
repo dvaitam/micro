@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforces-web
+  labels:
+    app: codeforces-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codeforces-web
+  template:
+    metadata:
+      labels:
+        app: codeforces-web
+    spec:
+      containers:
+        - name: web
+          image: local/codeforces-web:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: https://codeforces-api.manchik.co.uk
+            - name: NEXT_PUBLIC_WS_URL
+              value: wss://codeforces-api.manchik.co.uk/ws
+          ports:
+            - containerPort: 3000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20

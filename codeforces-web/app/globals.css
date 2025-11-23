@@ -199,6 +199,44 @@ button:disabled {
   color: #fecdd3;
 }
 
+.code-block {
+  margin-top: 6px;
+  padding: 10px;
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.nav-links {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.nav-links a {
+  color: #38bdf8;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.status li.active {
+  border-color: #38bdf8;
+}
+
+.row.space-between {
+  justify-content: space-between;
+  display: flex;
+}
+
+.pagination button {
+  min-width: 80px;
+}
+
 @media (max-width: 700px) {
   .header {
     flex-direction: column;

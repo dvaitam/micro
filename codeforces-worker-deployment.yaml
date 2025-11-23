@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforces-worker
+  labels:
+    app: codeforces-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codeforces-worker
+  template:
+    metadata:
+      labels:
+        app: codeforces-worker
+    spec:
+      containers:
+        - name: worker
+          image: local/codeforces-worker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_DSN
+              value: postgres://postgres:orib98wBpwUr15btAqoF2PksuDMTtsfJfrMsnzFUVai2Wo87MzI4SWb1g7cOeakq@micro-postgres.default.svc.cluster.local:5432/postgres?sslmode=require
+            - name: KAFKA_BROKERS
+              value: kafka.default.svc.cluster.local:9092
+            - name: KAFKA_SUBMISSION_TOPIC
+              value: cf.submissions
+            - name: KAFKA_STATUS_TOPIC
+              value: cf.submission_status

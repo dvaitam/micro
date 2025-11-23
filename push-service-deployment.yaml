@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert
+    kompose.version: 1.36.0 (ae2a39403)
+  labels:
+    io.kompose.service: push-service
+  name: push-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: push-service
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: kompose convert
+        kompose.version: 1.36.0 (ae2a39403)
+      labels:
+        io.kompose.service: push-service
+    spec:
+      containers:
+        - env:
+            - name: APNS_ENVIRONMENT
+              value: development
+            - name: APNS_KEY_ID
+              value: 3NBGA8639B
+            - name: APNS_KEY_PATH
+              value: /secrets/AuthKey_3NBGA8639B.p8
+            - name: APNS_TEAM_ID
+              value: V35SKYR64Q
+            - name: APNS_TOPIC
+              value: uk.co.manchik.iMessage
+            - name: KAFKA_CONSUMER_GROUP
+              value: push-service
+            - name: KAFKA_TOPIC
+              value: chat-messages
+            - name: KAFKA_URL
+              value: kafka:9092
+            - name: MYSQL_DSN
+              value: root:password@tcp(mysql:3306)/micro_auth?parseTime=true
+            - name: REDIS_ADDR
+              value: redis:6379
+          image: local/push-service:latest
+          imagePullPolicy: IfNotPresent
+          name: push-service
+          volumeMounts:
+            - mountPath: /secrets/AuthKey_3NBGA8639B.p8
+              name: push-service-cm0
+              readOnly: true
+              subPath: AuthKey_3NBGA8639B.p8
+      restartPolicy: Always
+      volumes:
+        - configMap:
+            items:
+              - key: AuthKey_3NBGA8639B.p8
+                path: AuthKey_3NBGA8639B.p8
+            name: push-service-cm0
+          name: push-service-cm0
