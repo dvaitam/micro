@@ -63,34 +63,60 @@ export default function SubmissionsPage() {
             <h2>Submissions</h2>
             <span className="muted">page {page + 1}</span>
           </div>
-          <ul className="status">
-            {(subs || []).map((s) => (
-              <li key={s.id}>
-                <div className="row space-between">
-                  <Link className="label" href={`/contest/${s.contest_id}/problem/${s.index}`}>
-                    {s.contest_id}
-                    {s.index}
-                  </Link>
-                  <span className="muted">{s.timestamp}</span>
-                </div>
-                <div>{s.status}</div>
-                {s.verdict && <div className="muted">Verdict: {s.verdict}</div>}
-                {s.stdout && (
-                  <details>
-                    <summary className="muted">Stdout</summary>
-                    <pre className="code-block">{s.stdout}</pre>
-                  </details>
-                )}
-                {s.stderr && (
-                  <details>
-                    <summary className="muted">Stderr</summary>
-                    <pre className="code-block">{s.stderr}</pre>
-                  </details>
-                )}
-              </li>
-            ))}
-            {subs.length === 0 && <li className="muted">No submissions</li>}
-          </ul>
+          <table className="status-table">
+            <thead>
+              <tr>
+                <th>Problem</th>
+                <th>Submitted</th>
+                <th>Status</th>
+                <th>Verdict</th>
+                <th>Output</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(subs || []).map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    <div className="row space-between">
+                      <Link className="label" href={`/contest/${s.contest_id}/problem/${s.index}`}>
+                        {s.contest_id}
+                        {s.index}
+                      </Link>
+                    </div>
+                  </td>
+                  <td>
+                    <span className="muted">{s.timestamp}</span>
+                  </td>
+                  <td>{s.status}</td>
+                  <td>{s.verdict ? s.verdict : <span className="muted">-</span>}</td>
+                  <td>
+                    <div className="output-cell">
+                      {s.stdout && (
+                        <details>
+                          <summary className="muted">Stdout</summary>
+                          <pre className="code-block">{s.stdout}</pre>
+                        </details>
+                      )}
+                      {s.stderr && (
+                        <details>
+                          <summary className="muted">Stderr</summary>
+                          <pre className="code-block">{s.stderr}</pre>
+                        </details>
+                      )}
+                      {!s.stdout && !s.stderr && <span className="muted">No output</span>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {subs.length === 0 && (
+                <tr>
+                  <td className="muted" colSpan={5}>
+                    No submissions
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
           <div className="pagination">
             <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
               Prev
