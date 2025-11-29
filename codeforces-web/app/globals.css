@@ -239,6 +239,49 @@ button:disabled {
   border-color: #0a84ff;
 }
 
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.status-table thead {
+  background: #f1f5f9;
+}
+
+.status-table th,
+.status-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+.status-table th {
+  font-size: 13px;
+  color: #475569;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.status-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.status-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.output-cell details {
+  margin-top: 4px;
+}
+
+.output-cell details:first-child {
+  margin-top: 0;
+}
+
 .row.space-between {
   justify-content: space-between;
   display: flex;
