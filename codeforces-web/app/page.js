@@ -43,6 +43,7 @@ export default function Home() {
         <div className="nav-links">
           <Link href="/">Home</Link>
           <Link href="/submissions">My submissions</Link>
+          <Link href="/leaderboard">Leaderboard</Link>
         </div>
       </header>
 

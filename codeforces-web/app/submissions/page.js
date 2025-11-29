@@ -67,10 +67,10 @@ export default function SubmissionsPage() {
             {(subs || []).map((s) => (
               <li key={s.id}>
                 <div className="row space-between">
-                  <span className="label">
+                  <Link className="label" href={`/contest/${s.contest_id}/problem/${s.index}`}>
                     {s.contest_id}
                     {s.index}
-                  </span>
+                  </Link>
                   <span className="muted">{s.timestamp}</span>
                 </div>
                 <div>{s.status}</div>

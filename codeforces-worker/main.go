@@ -37,7 +37,8 @@ type submission struct {
 }
 
 type problem struct {
-	Verifier string
+	Verifier          string
+	ReferenceSolution string
 }
 
 func main() {
@@ -111,6 +112,10 @@ func main() {
 }
 
 func handleSubmission(ctx context.Context, db *sql.DB, producer *kafka.Writer, id int64, streamTests bool) error {
+	// Enforce an upper bound on total submission processing time.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
 	sub, err := loadSubmission(ctx, db, id)
 	if err != nil {
 		return err
@@ -125,6 +130,14 @@ func handleSubmission(ctx context.Context, db *sql.DB, producer *kafka.Writer, i
 	}
 
 	res := runVerification(ctx, sub, prob, producer, streamTests)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res = statusMessage{
+			SubmissionID: sub.ID,
+			Status:       "completed",
+			Verdict:      "time limit exceeded",
+			Stderr:       "Time limit exceeded",
+		}
+	}
 	return publishStatus(ctx, producer, res)
 }
 
@@ -155,10 +168,10 @@ func loadSubmission(ctx context.Context, db *sql.DB, id int64) (*submission, err
 func loadProblem(ctx context.Context, db *sql.DB, contest, index string) (*problem, error) {
 	var p problem
 	err := db.QueryRowContext(ctx, `
-		SELECT COALESCE(verifier, '')
+		SELECT COALESCE(verifier, ''), COALESCE(reference_solution, '')
 		FROM problems
 		WHERE contest_id = $1 AND UPPER(index_name) = UPPER($2)
-	`, contest, index).Scan(&p.Verifier)
+	`, contest, index).Scan(&p.Verifier, &p.ReferenceSolution)
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +194,18 @@ func runVerification(ctx context.Context, sub *submission, prob *problem, produc
 		return statusMessage{SubmissionID: sub.ID, Status: "failed", Verdict: "write source failed: " + err.Error()}
 	}
 
-	candidateBin, err := buildCandidate(sub.Lang, srcPath, tmpDir)
+	candidateBin, err := buildCandidate(ctx, sub.Lang, srcPath, tmpDir)
 	if err != nil {
 		return statusMessage{SubmissionID: sub.ID, Status: "failed", Verdict: "compile failed: " + err.Error()}
+	}
+
+	// Persist the reference solution so verifiers can build/run their own oracle.
+	var refSrcPath string
+	if strings.TrimSpace(prob.ReferenceSolution) != "" {
+		refSrcPath = filepath.Join(tmpDir, referenceFilename(sub))
+		if err := os.WriteFile(refSrcPath, []byte(prob.ReferenceSolution), 0o644); err != nil {
+			return statusMessage{SubmissionID: sub.ID, Status: "failed", Verdict: "write reference failed: " + err.Error()}
+		}
 	}
 
 	// Special-case 1A: run tests directly so we can stream per-test status.
@@ -192,31 +214,49 @@ func runVerification(ctx context.Context, sub *submission, prob *problem, produc
 	}
 
 	// Write and build verifier.
-	verifierPath := filepath.Join(tmpDir, "verifierA.go")
+	verifierPath := filepath.Join(tmpDir, verifierFilename(sub.Index))
 	if err := os.WriteFile(verifierPath, []byte(prob.Verifier), 0o644); err != nil {
 		return statusMessage{SubmissionID: sub.ID, Status: "failed", Verdict: "write verifier failed: " + err.Error()}
 	}
-	verifierBin := filepath.Join(tmpDir, "verifier.bin")
-	buildCmd := exec.Command("go", "build", "-o", verifierBin, verifierPath)
-	buildCmd.Stdout = &bytes.Buffer{}
-	var verifierStderr bytes.Buffer
-	buildCmd.Stderr = &verifierStderr
-	if err := buildCmd.Run(); err != nil {
+	verifierBin, verifierStderr, err := goBuildBinary(ctx, verifierPath, tmpDir, "verifier.bin")
+	if err != nil {
 		return statusMessage{
 			SubmissionID: sub.ID,
 			Status:       "failed",
 			Verdict:      "verifier build failed",
-			Stderr:       verifierStderr.String(),
+			Stderr:       verifierStderr,
 		}
 	}
 
 	// Run verifier.
 	var outBuf, errBuf bytes.Buffer
-	run := exec.Command(verifierBin, candidateBin)
+	// Verifiers expect a single argument: the candidate binary path.
+	run := exec.CommandContext(ctx, verifierBin, candidateBin)
 	run.Stdout = &outBuf
 	run.Stderr = &errBuf
 	run.Dir = tmpDir
+	env := append(os.Environ(),
+		"CANDIDATE_PATH="+candidateBin,
+		"REFERENCE_SOURCE_PATH="+refSrcPath,
+		"GO111MODULE=off",
+		"GOWORK=off",
+	)
+	// Preserve compatibility with existing verifiers that check this env var.
+	if refSrcPath == "" {
+		env = append(env, "REFERENCE_SOLUTION_PATH=")
+	} else {
+		env = append(env, "REFERENCE_SOLUTION_PATH="+refSrcPath)
+	}
+	run.Env = env
 	if err := run.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return statusMessage{
+				SubmissionID: sub.ID,
+				Status:       "completed",
+				Verdict:      "time limit exceeded",
+				Stderr:       "Time limit exceeded",
+			}
+		}
 		exitCode := exitCode(err)
 		return statusMessage{
 			SubmissionID: sub.ID,
@@ -277,12 +317,20 @@ func verify1A(ctx context.Context, sub *submission, candidateBin string, produce
 			})
 		}
 
-		cmd := exec.Command(candidateBin)
+		cmd := exec.CommandContext(ctx, candidateBin)
 		cmd.Stdin = bytes.NewBufferString(fmt.Sprintf("%d %d %d\n", t.n, t.m, t.a))
 		var outBuf, errBuf bytes.Buffer
 		cmd.Stdout = &outBuf
 		cmd.Stderr = &errBuf
 		if err := cmd.Run(); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				return statusMessage{
+					SubmissionID: sub.ID,
+					Status:       "completed",
+					Verdict:      "time limit exceeded",
+					Stderr:       "Time limit exceeded",
+				}
+			}
 			exit := exitCode(err)
 			return statusMessage{
 				SubmissionID: sub.ID,
@@ -319,27 +367,28 @@ func verify1A(ctx context.Context, sub *submission, candidateBin string, produce
 	}
 }
 
-func buildCandidate(lang, srcPath, tmpDir string) (string, error) {
+func buildCandidate(ctx context.Context, lang, srcPath, tmpDir string) (string, error) {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	switch lang {
 	case "go", "golang":
-		bin := filepath.Join(tmpDir, "candidate_go.bin")
-		cmd := exec.Command("go", "build", "-o", bin, srcPath)
+		bin, stderr, err := goBuildBinary(ctx, srcPath, tmpDir, "candidate_go.bin")
+		if err != nil {
+			return "", errors.New(strings.TrimSpace(stderr))
+		}
+		return bin, nil
+	case "cpp", "c++", "cc", "cxx":
+		bin := filepath.Join(tmpDir, "candidate_cpp.bin")
+		cmd := exec.CommandContext(ctx, "g++", "-std=c++17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
 		cmd.Dir = tmpDir
-		cmd.Env = append(os.Environ(),
-			"GO111MODULE=off",
-			"GOWORK=off",
-			"GOPATH="+filepath.Join(tmpDir, "gopath"),
-		)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			return "", errors.New(strings.TrimSpace(stderr.String()))
 		}
 		return bin, nil
-	case "cpp", "c++", "cc", "cxx":
-		bin := filepath.Join(tmpDir, "candidate_cpp.bin")
-		cmd := exec.Command("g++", "-std=c++17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
+	case "rs", "rust":
+		bin := filepath.Join(tmpDir, "candidate_rs.bin")
+		cmd := exec.CommandContext(ctx, "rustc", "-O", srcPath, "-o", bin)
 		cmd.Dir = tmpDir
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -380,6 +429,20 @@ func submissionFilename(lang string) string {
 	default:
 		return "main.txt"
 	}
+}
+
+func referenceFilename(sub *submission) string {
+	contest := strings.TrimSpace(sub.ContestID)
+	index := strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, strings.TrimSpace(sub.Index))
+	if contest != "" && index != "" {
+		return contest + strings.ToUpper(index) + ".go"
+	}
+	return "reference_solution.go"
 }
 
 func tilesNeeded(n, m, a int64) int64 {
@@ -452,6 +515,23 @@ func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) e
 	return conn.CreateTopics(configs...)
 }
 
+func verifierFilename(index string) string {
+	base := strings.TrimSpace(index)
+	var b strings.Builder
+	b.WriteString("verifier")
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == len("verifier") {
+		b.WriteString("Default")
+	}
+	return b.String() + ".go"
+}
+
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -469,4 +549,21 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return cleaned
+}
+
+func goBuildBinary(ctx context.Context, srcPath, tmpDir, outName string) (string, string, error) {
+	bin := filepath.Join(tmpDir, outName)
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, srcPath)
+	cmd.Dir = tmpDir
+	cmd.Env = append(os.Environ(),
+		"GO111MODULE=off",
+		"GOWORK=off",
+		"GOPATH="+filepath.Join(tmpDir, "gopath"),
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", stderr.String(), err
+	}
+	return bin, stderr.String(), nil
 }

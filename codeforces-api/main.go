@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,11 +15,19 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/segmentio/kafka-go"
 )
+
+var jwtSecret = []byte(getenv("JWT_SECRET", "very-secret-key-change-in-prod"))
+
+type Claims struct {
+	UserID int64 `json:"user_id"`
+	jwt.RegisteredClaims
+}
 
 type problem struct {
 	ID                int64  `json:"id"`
@@ -46,6 +55,7 @@ type submissionRecord struct {
 	ID        int64  `json:"id"`
 	ContestID string `json:"contest_id"`
 	Index     string `json:"index"`
+	Lang      string `json:"lang,omitempty"`
 	Status    string `json:"status"`
 	Verdict   string `json:"verdict,omitempty"`
 	ExitCode  int    `json:"exit_code,omitempty"`
@@ -63,6 +73,32 @@ type statusMessage struct {
 	Stdout       string `json:"stdout,omitempty"`
 	Stderr       string `json:"stderr,omitempty"`
 	ExitCode     *int   `json:"exit_code,omitempty"`
+}
+
+type evaluationRecord struct {
+	ID        int64  `json:"id"`
+	RunID     string `json:"run_id,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	ProblemID int64  `json:"problem_id,omitempty"`
+	ContestID int    `json:"contest_id,omitempty"`
+	Index     string `json:"index,omitempty"`
+	Rating    int    `json:"rating,omitempty"`
+	Success   bool   `json:"success"`
+	Timestamp string `json:"timestamp"`
+	Prompt    string `json:"prompt,omitempty"`
+	Response  string `json:"response,omitempty"`
+	Stdout    string `json:"stdout,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
+}
+
+type leaderboardEntry struct {
+	RunID     string `json:"run_id"`
+	Model     string `json:"model"`
+	Lang      string `json:"lang"`
+	Rating    int    `json:"rating"`
+	Timestamp string `json:"timestamp"`
 }
 
 type server struct {
@@ -87,8 +123,8 @@ func main() {
 	statusTopic := getenv("KAFKA_STATUS_TOPIC", "cf.submission_status")
 	otpTopic := getenv("KAFKA_OTP_TOPIC", "new-registration")
 
-	if err := ensureKafkaTopics(context.Background(), brokers, []string{submissionTopic, statusTopic, otpTopic}); err != nil {
-		log.Fatalf("failed to ensure kafka topics: %v", err)
+	if err := ensureKafkaTopicsWithRetry(context.Background(), brokers, []string{submissionTopic, statusTopic, otpTopic}, 10, 3*time.Second); err != nil {
+		log.Printf("warning: continuing without ensuring kafka topics: %v", err)
 	}
 
 	db, err := sql.Open("postgres", dbDSN)
@@ -154,9 +190,12 @@ func main() {
 	mux.HandleFunc("/problems", s.handleProblems)
 	mux.HandleFunc("/problems/", s.handleProblemByPath)
 	mux.HandleFunc("/submissions", s.handleCreateSubmission)
+	mux.HandleFunc("/evaluations", s.handleEvaluations)
+	mux.HandleFunc("/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("/me/submissions", s.handleUserSubmissions)
 	mux.HandleFunc("/auth/request-otp", s.handleRequestOTP)
 	mux.HandleFunc("/auth/verify-otp", s.handleVerifyOTP)
+	mux.HandleFunc("/auth/refresh", s.handleRefreshToken)
 	mux.HandleFunc("/ws", s.handleWebsocket)
 	handler := withCORS(mux)
 
@@ -175,6 +214,7 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	contestFilter := strings.TrimSpace(r.URL.Query().Get("contest"))
 	limit := 20
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
 		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 500 {
@@ -187,12 +227,27 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
 			offset = o
 		}
 	}
-	rows, err := s.db.Query(`
-		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''), 
+
+	query := `
+		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
 		       COALESCE(reference_solution, ''), COALESCE(verifier, '')
 		FROM problems
-		ORDER BY contest_id, index_name
-		LIMIT $1 OFFSET $2`, limit, offset)
+	`
+	var (
+		where []string
+		args  []interface{}
+	)
+	if contestFilter != "" {
+		where = append(where, fmt.Sprintf("contest_id = $%d", len(args)+1))
+		args = append(args, contestFilter)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY contest_id, index_name LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -224,7 +279,7 @@ func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
 	index := parts[1]
 	var p problem
 	err := s.db.QueryRow(`
-		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''), 
+		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
 		       COALESCE(reference_solution, ''), COALESCE(verifier, '')
 		FROM problems
 		WHERE contest_id = $1 AND UPPER(index_name) = UPPER($2)
@@ -241,6 +296,10 @@ func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.handleListSubmissions(w, r)
+		return
+	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -289,6 +348,86 @@ func (s *server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// handleListSubmissions returns submissions for a given contest/index for all users.
+// This endpoint does not include code/stdout/stderr/response for privacy.
+func (s *server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
+	if idStr := strings.TrimSpace(r.URL.Query().Get("id")); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		var rec submissionRecord
+		var ts time.Time
+		err = s.db.QueryRow(`
+			SELECT id, contest_id, problem_letter, COALESCE(lang,''),
+			       COALESCE(status,''), COALESCE(verdict,''), COALESCE(exit_code,0),
+			       COALESCE(code,''), COALESCE(stdout,''), COALESCE(stderr,''), COALESCE(response,''),
+			       timestamp
+			FROM submissions
+			WHERE id = $1
+		`, id).Scan(&rec.ID, &rec.ContestID, &rec.Index, &rec.Lang, &rec.Status, &rec.Verdict, &rec.ExitCode, &rec.Code, &rec.Stdout, &rec.Stderr, &rec.Response, &ts)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.Timestamp = ts.Format(time.RFC3339)
+		writeJSON(w, http.StatusOK, rec)
+		return
+	}
+
+	contest := strings.TrimSpace(r.URL.Query().Get("contest"))
+	index := strings.TrimSpace(r.URL.Query().Get("index"))
+	if contest == "" || index == "" {
+		http.Error(w, "contest and index are required", http.StatusBadRequest)
+		return
+	}
+	limit := 50
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 500 {
+			limit = l
+		}
+	}
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+	rows, err := s.db.Query(`
+		SELECT id, contest_id, problem_letter, lang,
+		       COALESCE(status,''), COALESCE(verdict,''), COALESCE(exit_code,0),
+		       timestamp
+		FROM submissions
+		WHERE contest_id = $1 AND UPPER(problem_letter) = UPPER($2)
+		ORDER BY id DESC
+		LIMIT $3 OFFSET $4
+	`, contest, index, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var list []submissionRecord
+	for rows.Next() {
+		var rec submissionRecord
+		var ts time.Time
+		if err := rows.Scan(&rec.ID, &rec.ContestID, &rec.Index, &rec.Lang, &rec.Status, &rec.Verdict, &rec.ExitCode, &ts); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.Timestamp = ts.Format(time.RFC3339)
+		// Do not expose code/stdout/stderr/response on this public list.
+		rec.Code, rec.Stdout, rec.Stderr, rec.Response = "", "", "", ""
+		list = append(list, rec)
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 func (s *server) handleUserSubmissions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -312,7 +451,7 @@ func (s *server) handleUserSubmissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows, err := s.db.Query(`
-		SELECT id, contest_id, problem_letter,
+		SELECT id, contest_id, problem_letter, COALESCE(lang,''),
 		       COALESCE(status,''), COALESCE(verdict,''), COALESCE(exit_code,0),
 		       COALESCE(code,''), COALESCE(stdout,''), COALESCE(stderr,''), COALESCE(response,''),
 		       timestamp
@@ -330,7 +469,7 @@ func (s *server) handleUserSubmissions(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rec submissionRecord
 		var ts time.Time
-		if err := rows.Scan(&rec.ID, &rec.ContestID, &rec.Index, &rec.Status, &rec.Verdict, &rec.ExitCode, &rec.Code, &rec.Stdout, &rec.Stderr, &rec.Response, &ts); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.ContestID, &rec.Index, &rec.Lang, &rec.Status, &rec.Verdict, &rec.ExitCode, &rec.Code, &rec.Stdout, &rec.Stderr, &rec.Response, &ts); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -450,8 +589,9 @@ func (s *server) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Email string `json:"email"`
-		Code  string `json:"code"`
+		Email        string `json:"email"`
+		Code         string `json:"code"`
+		StayLoggedIn bool   `json:"stay_logged_in"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Email == "" || payload.Code == "" {
 		http.Error(w, "email and code required", http.StatusBadRequest)
@@ -471,20 +611,67 @@ func (s *server) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
 		return
 	}
-	token, expires, err := s.createSession(r.Context(), userID)
+
+	// Generate Refresh Token (UUID, stored in DB)
+	refreshToken, _, err := s.createRefreshToken(r.Context(), userID, payload.StayLoggedIn)
 	if err != nil {
-		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		http.Error(w, "failed to create refresh token", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "CF_SESSION",
-		Value:    token,
-		Path:     "/",
-		Expires:  expires,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+
+	// Generate Access Token (JWT, stateless)
+	accessToken, err := s.createAccessToken(userID)
+	if err != nil {
+		http.Error(w, "failed to create access token", http.StatusInternalServerError)
+		return
+	}
+
+	// Set refresh token in HttpOnly cookie (optional, but good practice)
+	// Also return it in body for flexibility
+	writeJSON(w, http.StatusOK, map[string]string{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"email":         payload.Email,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"token": token, "email": payload.Email})
+}
+
+func (s *server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	// Try reading from body first
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.RefreshToken == "" {
+		// Fallback to cookie if implemented/needed
+		// for now strict body requirement
+		http.Error(w, "refresh_token required", http.StatusBadRequest)
+		return
+	}
+
+	var userID int64
+	var expires time.Time
+	err := s.db.QueryRow(`
+		SELECT user_id, expires_at FROM sessions WHERE token = $1
+	`, payload.RefreshToken).Scan(&userID, &expires)
+
+	if err != nil || time.Now().After(expires) {
+		http.Error(w, "invalid or expired refresh token", http.StatusUnauthorized)
+		return
+	}
+
+	// Generate new Access Token
+	accessToken, err := s.createAccessToken(userID)
+	if err != nil {
+		http.Error(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"access_token": accessToken,
+	})
 }
 
 func (s *server) validateOTP(ctx context.Context, email, code string) (bool, error) {
@@ -516,9 +703,14 @@ func (s *server) ensureUser(ctx context.Context, email string) (int64, error) {
 	return id, err
 }
 
-func (s *server) createSession(ctx context.Context, userID int64) (string, time.Time, error) {
+// createRefreshToken creates a long-lived opaque token stored in DB
+func (s *server) createRefreshToken(ctx context.Context, userID int64, stayLoggedIn bool) (string, time.Time, error) {
 	token := uuid.NewString()
-	exp := time.Now().Add(24 * time.Hour)
+	duration := 24 * time.Hour
+	if stayLoggedIn {
+		duration = 30 * 24 * time.Hour // 30 days
+	}
+	exp := time.Now().Add(duration)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (token, user_id, expires_at)
 		VALUES ($1, $2, $3)
@@ -526,32 +718,203 @@ func (s *server) createSession(ctx context.Context, userID int64) (string, time.
 	return token, exp, err
 }
 
+// createAccessToken creates a short-lived JWT
+func (s *server) createAccessToken(userID int64) (string, error) {
+	expirationTime := time.Now().Add(15 * time.Minute)
+	claims := &Claims{
+		UserID: userID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
 func (s *server) authenticate(r *http.Request) (int64, error) {
-	var token string
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		token = strings.TrimPrefix(auth, "Bearer ")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return 0, errors.New("missing bearer token")
 	}
-	if token == "" {
-		if c, err := r.Cookie("CF_SESSION"); err == nil {
-			token = c.Value
-		}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+
+	// Check if it's a JWT
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+
+	if err == nil && token.Valid {
+		return claims.UserID, nil
 	}
-	if token == "" {
-		return 0, errors.New("missing token")
-	}
+
+	// Fallback: Check if it's a legacy session token (UUID) from DB
+	// This ensures smooth transition or hybrid support
 	var userID int64
 	var expires time.Time
-	err := s.db.QueryRow(`
+	err = s.db.QueryRow(`
 		SELECT user_id, expires_at FROM sessions WHERE token = $1
-	`, token).Scan(&userID, &expires)
+	`, tokenStr).Scan(&userID, &expires)
+	if err == nil {
+		if time.Now().After(expires) {
+			return 0, errors.New("session expired")
+		}
+		return userID, nil
+	}
+
+	return 0, errors.New("invalid token")
+}
+
+// handleEvaluations lists evaluations for a problem or returns one by ID.
+func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if idStr := strings.TrimSpace(r.URL.Query().Get("id")); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		var rec evaluationRecord
+		var ts time.Time
+		var contestID int
+		var rating int
+		err = s.db.QueryRow(`
+			SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+			       e.success, e.timestamp, COALESCE(e.prompt,''), COALESCE(e.response,''), COALESCE(e.stdout,''), COALESCE(e.stderr,'')
+			FROM evaluations e
+			LEFT JOIN problems p ON e.problem_id = p.id
+			WHERE e.id = $1
+		`, id).Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &contestID, &rec.Index, &rating, &rec.Success, &ts, &rec.Prompt, &rec.Response, &rec.Stdout, &rec.Stderr)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.ContestID = contestID
+		rec.Rating = rating
+		rec.Timestamp = ts.Format(time.RFC3339)
+		writeJSON(w, http.StatusOK, rec)
+		return
+	}
+
+	contest := strings.TrimSpace(r.URL.Query().Get("contest"))
+	index := strings.TrimSpace(r.URL.Query().Get("index"))
+	if contest == "" || index == "" {
+		http.Error(w, "contest and index are required", http.StatusBadRequest)
+		return
+	}
+
+	limit := 50
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	rows, err := s.db.Query(`
+		SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+		       e.success, e.timestamp
+		FROM evaluations e
+		JOIN problems p ON e.problem_id = p.id
+		WHERE p.contest_id = $1 AND UPPER(p.index_name) = UPPER($2)
+		ORDER BY e.timestamp DESC
+		LIMIT $3 OFFSET $4
+	`, contest, index, limit, offset)
 	if err != nil {
-		return 0, err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if time.Now().After(expires) {
-		return 0, errors.New("session expired")
+	defer rows.Close()
+
+	var evals []evaluationRecord
+	for rows.Next() {
+		var rec evaluationRecord
+		var ts time.Time
+		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.Timestamp = ts.Format(time.RFC3339)
+		evals = append(evals, rec)
 	}
-	return userID, nil
+	writeJSON(w, http.StatusOK, evals)
+}
+
+func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 100
+	rows, err := s.db.Query(`SELECT run_id, model, lang, rating, timestamp FROM leaderboard ORDER BY rating DESC LIMIT $1`, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var leaders []leaderboardEntry
+	for rows.Next() {
+		var l leaderboardEntry
+		var ts time.Time
+		if err = rows.Scan(&l.RunID, &l.Model, &l.Lang, &l.Rating, &ts); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		l.Timestamp = ts.Format(time.RFC3339)
+		leaders = append(leaders, l)
+	}
+
+	runID := strings.TrimSpace(r.URL.Query().Get("run"))
+	var evals []evaluationRecord
+	if runID != "" {
+		rows, err = s.db.Query(`
+			SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+			       e.success, e.timestamp
+			FROM evaluations e
+			JOIN problems p ON e.problem_id = p.id
+			WHERE e.run_id = $1
+			ORDER BY e.timestamp DESC
+			LIMIT 200
+		`, runID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rec evaluationRecord
+			var ts time.Time
+			if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			rec.Timestamp = ts.Format(time.RFC3339)
+			evals = append(evals, rec)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"leaders": leaders,
+		"evals":   evals,
+		"run":     runID,
+	})
 }
 
 func ensureSchemas(ctx context.Context, db *sql.DB) error {
@@ -622,6 +985,25 @@ func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) e
 		return nil
 	}
 	return conn.CreateTopics(configs...)
+}
+
+func ensureKafkaTopicsWithRetry(ctx context.Context, brokers []string, topics []string, attempts int, delay time.Duration) error {
+	for i := 1; i <= attempts; i++ {
+		if err := ensureKafkaTopics(ctx, brokers, topics); err == nil {
+			return nil
+		} else {
+			log.Printf("kafka topics check failed (attempt %d/%d): %v", i, attempts, err)
+			if i == attempts {
+				return err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil
 }
 
 func withCORS(next http.Handler) http.Handler {
