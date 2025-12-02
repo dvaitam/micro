@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
@@ -27,7 +27,7 @@ function cleanedResponse(response) {
   return stripComments(code);
 }
 
-export default function ModelPage() {
+function ModelView() {
   const searchParams = useSearchParams();
   const name = searchParams.get('name') || '';
 
@@ -140,5 +140,21 @@ export default function ModelPage() {
         </div>
       </section>
     </main>
+  );
+}
+export default function ModelPage() {
+  return (
+    <Suspense
+      fallback={(
+        <main className="page">
+          <header className="header">
+            <h1>Model view</h1>
+          </header>
+          <div className="notice">Loading model details…</div>
+        </main>
+      )}
+    >
+      <ModelView />
+    </Suspense>
   );
 }
