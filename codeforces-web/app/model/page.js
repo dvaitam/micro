@@ -142,7 +142,6 @@ function ModelView() {
     </main>
   );
 }
-
 export default function ModelPage() {
   return (
     <Suspense
