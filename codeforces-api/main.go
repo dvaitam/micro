@@ -192,6 +192,7 @@ func main() {
 	mux.HandleFunc("/submissions", s.handleCreateSubmission)
 	mux.HandleFunc("/evaluations", s.handleEvaluations)
 	mux.HandleFunc("/leaderboard", s.handleLeaderboard)
+	mux.HandleFunc("/model", s.handleModel)
 	mux.HandleFunc("/me/submissions", s.handleUserSubmissions)
 	mux.HandleFunc("/auth/request-otp", s.handleRequestOTP)
 	mux.HandleFunc("/auth/verify-otp", s.handleVerifyOTP)
@@ -883,16 +884,16 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimSpace(r.URL.Query().Get("run"))
 	var evals []evaluationRecord
 	if runID != "" {
-		rows, err = s.db.Query(`
-			SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
-			       e.success, e.timestamp
-			FROM evaluations e
-			JOIN problems p ON e.problem_id = p.id
-			WHERE e.run_id = $1
-			ORDER BY e.timestamp DESC
-			LIMIT 200
-		`, runID)
+                rows, err = s.db.Query(`
+                        SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+                               COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+                               e.success, e.timestamp, COALESCE(e.response,'')
+                        FROM evaluations e
+                        JOIN problems p ON e.problem_id = p.id
+                        WHERE e.run_id = $1
+                        ORDER BY e.timestamp DESC
+                        LIMIT 200
+                `, runID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -901,7 +902,7 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var rec evaluationRecord
 			var ts time.Time
-			if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts); err != nil {
+                        if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -914,6 +915,67 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		"leaders": leaders,
 		"evals":   evals,
 		"run":     runID,
+	})
+}
+
+// handleModel lists evaluations grouped by model name.
+func (s *server) handleModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	model := strings.TrimSpace(r.URL.Query().Get("name"))
+	if model == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	limit := 200
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 500 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	rows, err := s.db.Query(`
+                SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+                       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+                       e.success, e.timestamp, COALESCE(e.response,'')
+                FROM evaluations e
+                JOIN problems p ON e.problem_id = p.id
+                WHERE LOWER(e.model) = LOWER($1)
+                ORDER BY e.timestamp DESC
+                LIMIT $2 OFFSET $3
+        `, model, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var evals []evaluationRecord
+	for rows.Next() {
+		var rec evaluationRecord
+		var ts time.Time
+		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.Timestamp = ts.Format(time.RFC3339)
+		evals = append(evals, rec)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"model": model,
+		"evals": evals,
 	})
 }
 
