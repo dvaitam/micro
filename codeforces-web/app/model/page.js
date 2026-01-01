@@ -80,6 +80,10 @@ function ModelView() {
           <Link href="/">Problems</Link>
           <Link href="/leaderboard">Leaderboard</Link>
           <Link href="/submissions">My submissions</Link>
+          <Link href="/failed">Failed</Link>
+          <a href="https://codeforces.com/" target="_blank" rel="noreferrer">
+            Codeforces
+          </a>
         </div>
       </header>
 
@@ -99,6 +103,7 @@ function ModelView() {
                   <th>ID</th>
                   <th>Run</th>
                   <th>Problem</th>
+                  <th>Rating</th>
                   <th>Lang</th>
                   <th>Success</th>
                   <th>Timestamp</th>
@@ -116,6 +121,7 @@ function ModelView() {
                         {e.index}
                       </Link>
                     </td>
+                    <td>{e.rating && e.rating > 0 ? e.rating : '—'}</td>
                     <td>{e.lang}</td>
                     <td>{e.success ? 'yes' : 'no'}</td>
                     <td className="muted">{e.timestamp}</td>
@@ -129,7 +135,7 @@ function ModelView() {
                 ))}
                 {evals.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={7} className="muted">
+                    <td colSpan={8} className="muted">
                       No evaluations for this model.
                     </td>
                   </tr>

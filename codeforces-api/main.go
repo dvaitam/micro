@@ -1,25 +1,25 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
+    "context"
+    "database/sql"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
+    "sync"
+    "time"
 
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/segmentio/kafka-go"
+    _ "github.com/go-sql-driver/mysql"
+    "github.com/golang-jwt/jwt/v5"
+    "github.com/google/uuid"
+    "github.com/gorilla/websocket"
+    pq "github.com/lib/pq"
+    "github.com/segmentio/kafka-go"
 )
 
 var jwtSecret = []byte(getenv("JWT_SECRET", "very-secret-key-change-in-prod"))
@@ -30,13 +30,15 @@ type Claims struct {
 }
 
 type problem struct {
-	ID                int64  `json:"id"`
-	ContestID         string `json:"contest_id"`
-	Index             string `json:"index"`
-	Title             string `json:"title"`
-	Statement         string `json:"statement"`
-	ReferenceSolution string `json:"reference_solution,omitempty"`
-	Verifier          string `json:"verifier,omitempty"`
+    ID                int64  `json:"id"`
+    ContestID         string `json:"contest_id"`
+    Index             string `json:"index"`
+    Title             string `json:"title"`
+    Statement         string `json:"statement"`
+    ReferenceSolution string `json:"reference_solution,omitempty"`
+    Verifier          string `json:"verifier,omitempty"`
+    Rating            int    `json:"rating,omitempty"`
+    Tags              []string `json:"tags,omitempty"`
 }
 
 type submissionRequest struct {
@@ -91,6 +93,7 @@ type evaluationRecord struct {
 	Response  string `json:"response,omitempty"`
 	Stdout    string `json:"stdout,omitempty"`
 	Stderr    string `json:"stderr,omitempty"`
+	Reviewed  int    `json:"reviewied,omitempty"`
 }
 
 type leaderboardEntry struct {
@@ -191,9 +194,11 @@ func main() {
 	mux.HandleFunc("/problems/", s.handleProblemByPath)
 	mux.HandleFunc("/submissions", s.handleCreateSubmission)
 	mux.HandleFunc("/evaluations", s.handleEvaluations)
+	mux.HandleFunc("/failed", s.handleFailed)
 	mux.HandleFunc("/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("/model", s.handleModel)
 	mux.HandleFunc("/me/submissions", s.handleUserSubmissions)
+	mux.HandleFunc("/tags", s.handleTags)
 	mux.HandleFunc("/auth/request-otp", s.handleRequestOTP)
 	mux.HandleFunc("/auth/verify-otp", s.handleVerifyOTP)
 	mux.HandleFunc("/auth/refresh", s.handleRefreshToken)
@@ -229,41 +234,71 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	query := `
-		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
-		       COALESCE(reference_solution, ''), COALESCE(verifier, '')
-		FROM problems
-	`
-	var (
-		where []string
-		args  []interface{}
-	)
-	if contestFilter != "" {
-		where = append(where, fmt.Sprintf("contest_id = $%d", len(args)+1))
-		args = append(args, contestFilter)
-	}
+    query := `
+        SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
+               COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
+               COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
+        FROM problems
+    `
+    var (
+        where []string
+        args  []interface{}
+    )
+    if contestFilter != "" {
+        where = append(where, fmt.Sprintf("contest_id = $%d", len(args)+1))
+        args = append(args, contestFilter)
+    }
+    // Tag filtering: tags=tag1,tag2 and tags_mode=any|all (default any)
+    if tagsCSV := strings.TrimSpace(r.URL.Query().Get("tags")); tagsCSV != "" {
+        tags := splitAndTrim(tagsCSV)
+        if len(tags) > 0 {
+            mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tags_mode")))
+            if mode == "all" {
+                // array contains all elements
+                where = append(where, fmt.Sprintf("tags @> $%d", len(args)+1))
+                args = append(args, pq.Array(tags))
+            } else {
+                // any overlap
+                where = append(where, fmt.Sprintf("tags && $%d", len(args)+1))
+                args = append(args, pq.Array(tags))
+            }
+        }
+    }
+    // Optional rating range
+    if minStr := strings.TrimSpace(r.URL.Query().Get("min_rating")); minStr != "" {
+        if mv, err := strconv.Atoi(minStr); err == nil {
+            where = append(where, fmt.Sprintf("COALESCE(rating,0) >= $%d", len(args)+1))
+            args = append(args, mv)
+        }
+    }
+    if maxStr := strings.TrimSpace(r.URL.Query().Get("max_rating")); maxStr != "" {
+        if mv, err := strconv.Atoi(maxStr); err == nil {
+            where = append(where, fmt.Sprintf("COALESCE(rating,0) <= $%d", len(args)+1))
+            args = append(args, mv)
+        }
+    }
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += fmt.Sprintf(" ORDER BY contest_id, index_name LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 	args = append(args, limit, offset)
 
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	var probs []problem
-	for rows.Next() {
-		var p problem
-		if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		probs = append(probs, p)
-	}
-	writeJSON(w, http.StatusOK, probs)
+    rows, err := s.db.Query(query, args...)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    defer rows.Close()
+    var probs []problem
+    for rows.Next() {
+        var p problem
+        if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier, &p.Rating, pq.Array(&p.Tags)); err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        probs = append(probs, p)
+    }
+    writeJSON(w, http.StatusOK, probs)
 }
 
 func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
@@ -279,12 +314,13 @@ func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
 	contest := parts[0]
 	index := parts[1]
 	var p problem
-	err := s.db.QueryRow(`
-		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
-		       COALESCE(reference_solution, ''), COALESCE(verifier, '')
-		FROM problems
-		WHERE contest_id = $1 AND UPPER(index_name) = UPPER($2)
-	`, contest, index).Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier)
+    err := s.db.QueryRow(`
+        SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
+               COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
+               COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
+        FROM problems
+        WHERE contest_id = $1 AND UPPER(index_name) = UPPER($2)
+    `, contest, index).Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier, &p.Rating, pq.Array(&p.Tags))
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
@@ -783,14 +819,15 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 		var ts time.Time
 		var contestID int
 		var rating int
+		var reviewed int
 		err = s.db.QueryRow(`
 			SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
 			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
-			       e.success, e.timestamp, COALESCE(e.prompt,''), COALESCE(e.response,''), COALESCE(e.stdout,''), COALESCE(e.stderr,'')
+			       e.success, e.timestamp, COALESCE(e.prompt,''), COALESCE(e.response,''), COALESCE(e.stdout,''), COALESCE(e.stderr,''), COALESCE(e.reviewied,0)
 			FROM evaluations e
 			LEFT JOIN problems p ON e.problem_id = p.id
 			WHERE e.id = $1
-		`, id).Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &contestID, &rec.Index, &rating, &rec.Success, &ts, &rec.Prompt, &rec.Response, &rec.Stdout, &rec.Stderr)
+		`, id).Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &contestID, &rec.Index, &rating, &rec.Success, &ts, &rec.Prompt, &rec.Response, &rec.Stdout, &rec.Stderr, &reviewed)
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -802,6 +839,7 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 		rec.ContestID = contestID
 		rec.Rating = rating
 		rec.Timestamp = ts.Format(time.RFC3339)
+		rec.Reviewed = reviewed
 		writeJSON(w, http.StatusOK, rec)
 		return
 	}
@@ -826,16 +864,26 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := s.db.Query(`
+	unreviewed := strings.TrimSpace(r.URL.Query().Get("unreviewed")) == "1"
+	query := `
 		SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
 		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
-		       e.success, e.timestamp
+		       e.success, e.timestamp, COALESCE(e.reviewied,0)
 		FROM evaluations e
 		JOIN problems p ON e.problem_id = p.id
 		WHERE p.contest_id = $1 AND UPPER(p.index_name) = UPPER($2)
+	`
+	var args []interface{}
+	args = append(args, contest, index)
+	if unreviewed {
+		query += " AND COALESCE(e.reviewied,0) = 0"
+	}
+	query += `
 		ORDER BY e.timestamp DESC
 		LIMIT $3 OFFSET $4
-	`, contest, index, limit, offset)
+	`
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -846,7 +894,7 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rec evaluationRecord
 		var ts time.Time
-		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts); err != nil {
+		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Reviewed); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -884,16 +932,16 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimSpace(r.URL.Query().Get("run"))
 	var evals []evaluationRecord
 	if runID != "" {
-                rows, err = s.db.Query(`
-                        SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-                               COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
-                               e.success, e.timestamp, COALESCE(e.response,'')
-                        FROM evaluations e
-                        JOIN problems p ON e.problem_id = p.id
-                        WHERE e.run_id = $1
-                        ORDER BY e.timestamp DESC
-                        LIMIT 200
-                `, runID)
+		rows, err = s.db.Query(`
+			SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+			       e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
+			FROM evaluations e
+			JOIN problems p ON e.problem_id = p.id
+			WHERE e.run_id = $1
+			ORDER BY e.timestamp DESC
+			LIMIT 200
+		`, runID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -902,7 +950,7 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var rec evaluationRecord
 			var ts time.Time
-                        if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response); err != nil {
+			if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response, &rec.Reviewed); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -945,13 +993,19 @@ func (s *server) handleModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	unreviewed := strings.TrimSpace(r.URL.Query().Get("unreviewed")) == "1"
 	rows, err := s.db.Query(`
                 SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
                        COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
-                       e.success, e.timestamp, COALESCE(e.response,'')
+                       e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
                 FROM evaluations e
                 JOIN problems p ON e.problem_id = p.id
-                WHERE LOWER(e.model) = LOWER($1)
+                WHERE LOWER(e.model) = LOWER($1) `+(func() string {
+		if unreviewed {
+			return " AND COALESCE(e.reviewied,0) = 0 "
+		}
+		return ""
+	})()+`
                 ORDER BY e.timestamp DESC
                 LIMIT $2 OFFSET $3
         `, model, limit, offset)
@@ -965,7 +1019,7 @@ func (s *server) handleModel(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rec evaluationRecord
 		var ts time.Time
-		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response); err != nil {
+		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response, &rec.Reviewed); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -976,6 +1030,82 @@ func (s *server) handleModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"model": model,
 		"evals": evals,
+	})
+}
+
+// handleFailed lists failed evaluations with optional unreviewed filter.
+func (s *server) handleFailed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 200
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 500 {
+			limit = l
+		}
+	}
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+	unreviewed := strings.TrimSpace(r.URL.Query().Get("unreviewed")) == "1"
+	modelFilter := strings.TrimSpace(r.URL.Query().Get("model"))
+
+	query := `
+		SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
+		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+		       e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
+		FROM evaluations e
+		JOIN problems p ON e.problem_id = p.id
+		WHERE e.success = FALSE
+	`
+	var args []interface{}
+	argPos := 1
+	if unreviewed {
+		query += " AND COALESCE(e.reviewied,0) = 0"
+	}
+	if modelFilter != "" {
+		query += fmt.Sprintf(" AND LOWER(e.model) = LOWER($%d)", argPos)
+		args = append(args, modelFilter)
+		argPos++
+	}
+	query += `
+		ORDER BY e.timestamp DESC
+		LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1) + `
+	`
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var evals []evaluationRecord
+	for rows.Next() {
+		var rec evaluationRecord
+		var ts time.Time
+		if err = rows.Scan(&rec.ID, &rec.RunID, &rec.Provider, &rec.Model, &rec.Lang, &rec.ProblemID, &rec.ContestID, &rec.Index, &rec.Rating, &rec.Success, &ts, &rec.Response, &rec.Reviewed); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec.Timestamp = ts.Format(time.RFC3339)
+		evals = append(evals, rec)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"evals": evals,
+		"meta": map[string]any{
+			"unreviewed": unreviewed,
+			"limit":      limit,
+			"offset":     offset,
+			"model":      modelFilter,
+		},
 	})
 }
 
@@ -1001,6 +1131,67 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(64)`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id INT`,
+		`ALTER TABLE evaluations ADD COLUMN IF NOT EXISTS reviewied SMALLINT DEFAULT 0`,
+		// Problems table for listing/metadata and tag filtering
+		`CREATE TABLE IF NOT EXISTS problems (
+			id SERIAL PRIMARY KEY,
+			contest_id VARCHAR(20) NOT NULL,
+			index_name VARCHAR(10) NOT NULL,
+			title TEXT,
+			statement TEXT,
+			reference_solution TEXT,
+			verifier TEXT,
+			rating INT,
+			tags TEXT[],
+			UNIQUE (contest_id, index_name)
+		)`,
+        `ALTER TABLE problems ADD COLUMN IF NOT EXISTS rating INT`,
+        `ALTER TABLE problems ADD COLUMN IF NOT EXISTS tags TEXT[]`,
+		// If an older schema had tags as TEXT, coerce to TEXT[]
+		`DO $$ BEGIN
+		  IF EXISTS (
+		    SELECT 1 FROM information_schema.columns 
+		    WHERE table_name='problems' AND column_name='tags' AND udt_name='text'
+		  ) THEN
+		    ALTER TABLE problems 
+		      ALTER COLUMN tags TYPE TEXT[]
+		      USING (
+		        CASE 
+		          WHEN tags IS NULL THEN NULL
+		          WHEN left(tags,1) = '{' THEN tags::text[]
+		          ELSE string_to_array(tags, ',')
+		        END);
+		  END IF;
+		END $$;`,
+		// Clean any incorrectly converted tag elements that still contain quotes/braces
+        `UPDATE problems SET tags = (
+           SELECT COALESCE(ARRAY(
+             SELECT DISTINCT lower(
+               trim(both ' ' from
+                 regexp_replace(
+                   regexp_replace(
+                     trim(both '{}' from e),
+                     E'\\\\', '', 'g'
+                   ),
+                   '"', '', 'g'
+                 )
+               )
+             )
+             FROM unnest(COALESCE(tags, ARRAY[]::text[])) AS e
+             WHERE lower(
+               trim(both ' ' from
+                 regexp_replace(
+                   regexp_replace(
+                     trim(both '{}' from e),
+                     E'\\\\', '', 'g'
+                   ),
+                   '"', '', 'g'
+                 )
+               )
+             ) <> ''
+           ), ARRAY[]::text[])
+         )
+         WHERE tags IS NOT NULL;`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			email VARCHAR(255) UNIQUE NOT NULL,
@@ -1014,12 +1205,64 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_submissions_user ON submissions(user_id)`,
 	}
-	for _, stmt := range ddl {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+    for _, stmt := range ddl {
+        if _, err := db.ExecContext(ctx, stmt); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+// pqArray scans a Postgres text[] into a []string pointer.
+type strSliceScanner struct{ dst *[]string }
+
+// helper removed; using pq.Array for scanning and params
+
+// handleTags returns distinct tags from problems.
+func (s *server) handleTags(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+    rows, err := s.db.Query(`
+        SELECT DISTINCT
+          lower(
+            trim(both ' ' from
+              regexp_replace(
+                regexp_replace(
+                  trim(both '{}' from t),
+                  E'\\\\', '', 'g'
+                ),
+                '"', '', 'g'
+              )
+            )
+          ) AS tag
+        FROM problems, unnest(COALESCE(tags, ARRAY[]::text[])) AS t
+        WHERE t IS NOT NULL AND
+          lower(
+            trim(both ' ' from
+              regexp_replace(
+                regexp_replace(
+                  trim(both '{}' from t),
+                  E'\\\\', '', 'g'
+                ),
+                '"', '', 'g'
+              )
+            )
+          ) <> ''
+        ORDER BY 1`)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    defer rows.Close()
+    var tags []string
+    for rows.Next() {
+        var t string
+        if err := rows.Scan(&t); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+        if strings.TrimSpace(t) != "" { tags = append(tags, t) }
+    }
+    writeJSON(w, http.StatusOK, tags)
 }
 
 func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) error {

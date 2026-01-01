@@ -76,7 +76,27 @@ export default function ReferenceSolutionPage({ params }) {
             Reference solution {contest}
             {index}
           </h1>
-          <p className="muted">{problem?.title || 'Problem'}</p>
+          <div className="row gap-8">
+            <p>{problem?.title || 'Problem'}</p>
+            <Link
+              href={`https://codeforces.com/contest/${contest}/problem/${index}`}
+              target="_blank"
+              rel="noreferrer"
+              className="muted"
+            >
+              View on Codeforces.com ↗
+            </Link>
+          </div>
+          {problem && (
+            <div className="muted" style={{ marginTop: 4 }}>
+              {problem.rating > 0 ? `rating ${problem.rating}` : 'rating —'}
+              {Array.isArray(problem.tags) && problem.tags.length > 0 && (
+                <>
+                  {' '}• tags: {problem.tags.join(', ')}
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div className="nav-links">
           <Link href="/">Problems</Link>

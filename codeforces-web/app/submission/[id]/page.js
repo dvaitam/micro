@@ -49,6 +49,7 @@ export default function SubmissionFixPage({ params }) {
           <Link href="/">Problems</Link>
           <Link href="/leaderboard">Leaderboard</Link>
           <Link href="/submissions">My submissions</Link>
+          <Link href="/failed">Failed</Link>
         </div>
       </header>
 

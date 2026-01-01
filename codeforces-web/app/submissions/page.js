@@ -52,6 +52,7 @@ export default function SubmissionsPage() {
         <div className="nav-links">
           <Link href="/">Home</Link>
           <button onClick={() => fetchSubs(page)}>Refresh</button>
+          <Link href="/failed">Failed</Link>
         </div>
       </header>
 

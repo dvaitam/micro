@@ -8,8 +8,17 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="local/codeforces-web:latest"
 ARCHIVE="/tmp/codeforces_web_latest.tar"
-MANIFEST="${SCRIPT_DIR}/codeforces-web-deployment.yaml"
-SERVICE="${SCRIPT_DIR}/codeforces-web-service.yaml"
+# Prefer manifests in ../config (sibling directory) or allow override via CONFIG_DIR
+CONFIG_DIR="${CONFIG_DIR:-}"
+if [ -z "${CONFIG_DIR}" ]; then
+  if [ -d "${SCRIPT_DIR}/../config" ]; then
+    CONFIG_DIR="$(cd "${SCRIPT_DIR}/../config" && pwd)"
+  else
+    CONFIG_DIR="/home/ubuntu/config"
+  fi
+fi
+MANIFEST="${CONFIG_DIR}/codeforces-web-deployment.yaml"
+SERVICE="${CONFIG_DIR}/codeforces-web-service.yaml"
 REMOTE_NODES=(k8s-cp-02 k8s-cp-03)
 API_URL="${NEXT_PUBLIC_API_URL:-http://codeforces-api.default.svc.cluster.local:8082}"
 WS_URL="${NEXT_PUBLIC_WS_URL:-ws://codeforces-api.default.svc.cluster.local:8082/ws}"
@@ -41,7 +50,7 @@ for node in "${REMOTE_NODES[@]}"; do
   ssh "${node}" sudo ctr -n k8s.io images import "${ARCHIVE}"
 done
 
-log "Applying Kubernetes manifests"
+log "Applying Kubernetes manifests from ${CONFIG_DIR}"
 kubectl apply -f "${SERVICE}"
 kubectl apply -f "${MANIFEST}"
 

@@ -64,6 +64,14 @@ export default function ContestListing({ params }) {
                 </div>
                 <div>
                   <div>{p.title || 'Untitled problem'}</div>
+                  <div className="muted" style={{ fontSize: '0.9em', marginTop: 2 }}>
+                    {p.rating > 0 ? `rating ${p.rating}` : 'rating —'}
+                    {Array.isArray(p.tags) && p.tags.length > 0 && (
+                      <>
+                        {' '}• tags: {p.tags.slice(0, 6).join(', ')}{p.tags.length > 6 ? '…' : ''}
+                      </>
+                    )}
+                  </div>
                 </div>
               </Link>
             </li>

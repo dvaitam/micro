@@ -301,3 +301,32 @@ button:disabled {
     align-items: flex-start;
   }
 }
+
+/* Tag filter sidebar */
+.tag-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #eee;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.tag-filter-item {
+  display: grid;
+  grid-template-columns: 16px 1fr; /* checkbox column, text column */
+  column-gap: 8px;
+  align-items: center; /* vertically center checkbox and first line of text */
+}
+
+.tag-filter-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.tag-filter-item span {
+  flex: 1 1 auto;
+}

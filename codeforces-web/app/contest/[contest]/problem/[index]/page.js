@@ -400,6 +400,16 @@ export default function ProblemPage({ params }) {
               Reference solution ↗
             </Link>
           </div>
+          {problem && (
+            <div className="muted" style={{ marginTop: 4 }}>
+              {problem.rating > 0 ? `rating ${problem.rating}` : 'rating —'}
+              {Array.isArray(problem.tags) && problem.tags.length > 0 && (
+                <>
+                  {' '}• tags: {problem.tags.join(', ')}
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div className="nav-links">
           <Link href="/">Problems</Link>
@@ -473,9 +483,12 @@ export default function ProblemPage({ params }) {
               Language
               <select value={lang} onChange={(e) => setLang(e.target.value)}>
                 <option value="go">Go</option>
+                <option value="c">C</option>
                 <option value="cpp">C++</option>
                 <option value="py">Python</option>
                 <option value="rs">Rust</option>
+                <option value="java">Java</option>
+                <option value="kotlin">Kotlin</option>
               </select>
             </label>
             <label>

@@ -8,8 +8,17 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="local/codeforces-api:latest"
 ARCHIVE="/tmp/codeforces_api_latest.tar"
-MANIFEST="${SCRIPT_DIR}/codeforces-api-deployment.yaml"
-SERVICE="${SCRIPT_DIR}/codeforces-api-service.yaml"
+# Prefer manifests in ../config (sibling directory) or allow override via CONFIG_DIR
+CONFIG_DIR="${CONFIG_DIR:-}"
+if [ -z "${CONFIG_DIR}" ]; then
+  if [ -d "${SCRIPT_DIR}/../config" ]; then
+    CONFIG_DIR="$(cd "${SCRIPT_DIR}/../config" && pwd)"
+  else
+    CONFIG_DIR="/home/ubuntu/config"
+  fi
+fi
+MANIFEST="${CONFIG_DIR}/codeforces-api-deployment.yaml"
+SERVICE="${CONFIG_DIR}/codeforces-api-service.yaml"
 REMOTE_NODES=(k8s-cp-02 k8s-cp-03)
 POSTGRES_DSN="${POSTGRES_DSN:-postgres://postgres:orib98wBpwUr15btAqoF2PksuDMTtsfJfrMsnzFUVai2Wo87MzI4SWb1g7cOeakq@micro-postgres.default.svc.cluster.local:5432/postgres?sslmode=require}"
 KAFKA_BROKERS="${KAFKA_BROKERS:-kafka.default.svc.cluster.local:9092}"
@@ -31,7 +40,7 @@ for node in "${REMOTE_NODES[@]}"; do
   ssh "${node}" sudo ctr -n k8s.io images import "${ARCHIVE}"
 done
 
-log "Applying Kubernetes manifests"
+log "Applying Kubernetes manifests from ${CONFIG_DIR}"
 kubectl apply -f "${SERVICE}"
 kubectl apply -f "${MANIFEST}"
 
