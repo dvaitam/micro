@@ -11,6 +11,7 @@ This stack now provides OTP-based authentication and a WebSocket chat service on
 - `email-worker`: consumes `new-registration` topic from Kafka, generates 6-digit OTPs, stores them in MySQL for 3 minutes, and emails the code via Mailgun.
 - `chat-service` (port `8083`): validates session tokens, upgrades clients to WebSockets, tracks online users, and fans out chat messages via Redis pub/sub.
 - `rtc-service` (port `8085`): lightweight WebRTC signaling + TURN credential service that issues call sessions, stores offers/answers/ICE candidates in-memory, and hands out short-lived TURN credentials for browsers/iOS clients.
+- `ssh-service` (port `8086`): manages per-user SSH connection definitions (host, port, username, password or private key) with AES‑256 encryption at rest, validates Bearer JWTs from `registration-api`, and executes commands on demand.
 - `turn-server` (ports `3478` + UDP relay range `49160-49200`): coturn configured for long-term credentials using a shared secret so media can flow when peers are behind restrictive NATs.
 - `redis`: message broker for the chat service (port `6379` exposed for local inspection if needed).
 - `mysql`: stores auth/session data for the API, worker, and chat service (`3306` exposed for convenience).
@@ -25,6 +26,21 @@ This stack now provides OTP-based authentication and a WebSocket chat service on
    ```
 3. Visit `http://localhost:8082/` to request an OTP. After verifying the code (valid for 3 minutes), you will be redirected to `/chat` with a session cookie.
 4. Open the chat UI in multiple browsers using different accounts to see presence updates and exchange messages in real time.
+5. Use `ssh-service` APIs with the `access_token` from `registration-api`.
+
+#### ssh-service API
+- `GET /healthz` → service status.
+- `GET /api/ssh/connections` → list your connections.
+- `POST /api/ssh/connections` → create a connection. Body:
+  `{ "name":"prod", "host":"1.2.3.4", "port":22, "username":"ubuntu", "password":"..." }`
+  or with key: `{ "private_key":"PEM...", "passphrase":"optional" }`.
+- `GET /api/ssh/connections/{id}` → fetch one.
+- `PUT /api/ssh/connections/{id}` → update any fields; set `"password":""` or `"private_key":""` to clear.
+- `DELETE /api/ssh/connections/{id}` → delete.
+- `POST /api/ssh/run` → run a command. Body: `{ "connection_id": 1, "command": "uname -a", "timeout_seconds": 30 }`. Response includes `output` and `exit_status`.
+
+Environment:
+- `SSH_ENCRYPTION_KEY` must be a base64‑encoded 32‑byte key (AES‑256) used to encrypt passwords/keys at rest.
 
 ### WebRTC signaling + TURN
 `rtc-service` exposes a simple HTTP API:
