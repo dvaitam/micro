@@ -87,10 +87,20 @@ export default function Home() {
   const [run, setRun] = useState({ id: 0, command: 'uname -a', keepalive: 300 })
   const runCommand = async () => {
     const id = selectedId ?? run.id
-    const res = await fetch(`${baseURL}/api/ssh/run`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authz }, body: JSON.stringify({ connection_id: id, command: run.command, keepalive_seconds: run.keepalive }) })
-    const data = await parseJsonSafe(res)
-    if (res.ok) setMessage(`Exit ${data.exit_status}${data.reused ? ' (reused)' : ''}`)
-    else setMessage(data.error || 'run failed')
+    setLastResult('')
+    const url = new URL(`${baseURL.replace(/\/$/, '')}/api/ssh/stream`)
+    url.searchParams.set('id', String(id))
+    url.searchParams.set('cmd', run.command)
+    url.searchParams.set('keepalive_seconds', String(run.keepalive))
+    const wsUrl = url.toString().replace('https://', 'wss://').replace('http://', 'ws://')
+    const ws = new WebSocket(wsUrl)
+    ws.onmessage = (ev) => {
+      const msg = typeof ev.data === 'string' ? ev.data : ''
+      if (msg === '__CMD_DONE__') { ws.close(); return }
+      setLastResult(prev => prev + msg)
+    }
+    ws.onerror = () => setMessage('stream error')
+    ws.onclose = () => setMessage('command finished')
   }
 
   const loadLive = async () => {
@@ -189,7 +199,7 @@ export default function Home() {
             <button onClick={async () => { await runCommand(); if (message) setMessage(message) }}>Run</button>
           </div>
           {lastResult && (
-            <pre style={{ marginTop: 12, padding: 12, background: '#0f172a', color: '#e2e8f0', borderRadius: 8, overflow: 'auto' }}>{lastResult}</pre>
+            <pre style={{ marginTop: 12, padding: 12, background: '#0f172a', color: '#e2e8f0', borderRadius: 8, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{lastResult}</pre>
           )}
         </div>
       )}

@@ -23,6 +23,7 @@ import (
 
     _ "github.com/go-sql-driver/mysql"
     "golang.org/x/crypto/ssh"
+    "github.com/gorilla/websocket"
 )
 
 type jwtClaims struct {
@@ -97,6 +98,7 @@ func main() {
     mux.HandleFunc("/api/ssh/connections/", withAuth(handleConnectionByID))
     mux.HandleFunc("/api/ssh/run", withAuth(handleRunCommand))
     mux.HandleFunc("/api/ssh/live", withAuth(handleLiveConnections))
+    mux.HandleFunc("/api/ssh/stream", withAuth(handleStreamCommand))
 
     port := strings.TrimSpace(os.Getenv("SERVICE_PORT"))
     if port == "" { port = "8086" }
@@ -391,6 +393,66 @@ func handleRunCommand(w http.ResponseWriter, r *http.Request, email string) {
         "reused":      reused,
     })
 }
+
+// WebSocket: run command and stream stdout/stderr as it arrives.
+func handleStreamCommand(w http.ResponseWriter, r *http.Request, email string) {
+    if r.Method != http.MethodGet { w.Header().Set("Allow","GET"); w.WriteHeader(http.StatusMethodNotAllowed); return }
+    // Query: id, cmd, keepalive_seconds, timeout_seconds
+    q := r.URL.Query()
+    id, _ := strconv.ParseInt(q.Get("id"), 10, 64)
+    cmd := strings.TrimSpace(q.Get("cmd"))
+    keepalive, _ := strconv.Atoi(q.Get("keepalive_seconds"))
+    timeout, _ := strconv.Atoi(q.Get("timeout_seconds"))
+    if id == 0 || cmd == "" { http.Error(w, "missing id/cmd", 400); return }
+    if timeout <= 0 { timeout = 60 }
+
+    var host, username string
+    var port int
+    var passEnc, keyEnc, phrEnc []byte
+    err := db.QueryRow(`SELECT host, port, username, password_enc, private_key_enc, passphrase_enc FROM ssh_connections WHERE id=? AND owner_email=?`, id, email).
+        Scan(&host, &port, &username, &passEnc, &keyEnc, &phrEnc)
+    if err != nil { http.Error(w, "not found", 404); return }
+
+    var auths []ssh.AuthMethod
+    if len(keyEnc) > 0 {
+        keyPem, err := openSeal(keyEnc); if err != nil { http.Error(w, "key decrypt", 500); return }
+        var signer ssh.Signer
+        if len(phrEnc) > 0 { pw, _ := openSeal(phrEnc); signer, err = ssh.ParsePrivateKeyWithPassphrase(keyPem, pw) } else { signer, err = ssh.ParsePrivateKey(keyPem) }
+        if err != nil { http.Error(w, "bad key", 400); return }
+        auths = append(auths, ssh.PublicKeys(signer))
+    }
+    if len(passEnc) > 0 { pw, err := openSeal(passEnc); if err != nil { http.Error(w, "pw decrypt", 500); return }; auths = append(auths, ssh.Password(string(pw))) }
+    if len(auths) == 0 { http.Error(w, "no credentials", 400); return }
+
+    cfg := &ssh.ClientConfig{ User: username, Auth: auths, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: time.Duration(timeout)*time.Second }
+    ttl := connTTL; if keepalive > 0 { ttl = time.Duration(keepalive)*time.Second }
+    client, _, err := getOrDialClient(email, id, fmt.Sprintf("%s:%d", host, port), cfg, ttl, time.Duration(timeout)*time.Second)
+    if err != nil { http.Error(w, "dial failed", 502); return }
+
+    upgrader := websocket.Upgrader{ CheckOrigin: func(r *http.Request) bool { return true } }
+    c, err := upgrader.Upgrade(w, r, nil)
+    if err != nil { return }
+    defer c.Close()
+
+    session, err := client.NewSession()
+    if err != nil { c.WriteMessage(websocket.TextMessage, []byte("ERR: session failed")); return }
+    defer session.Close()
+    stdout, _ := session.StdoutPipe()
+    stderr, _ := session.StderrPipe()
+    if err := session.Start(cmd); err != nil { c.WriteMessage(websocket.TextMessage, []byte("ERR: start failed")); return }
+
+    done := make(chan struct{}, 1)
+    go func(){ io.Copy(wsWriter{c}, stdout); done<-struct{}{} }()
+    go func(){ io.Copy(wsWriter{c}, stderr); done<-struct{}{} }()
+
+    // Wait for both streams and command exit
+    _ = session.Wait()
+    <-done; <-done
+    _ = c.WriteMessage(websocket.TextMessage, []byte("__CMD_DONE__"))
+}
+
+type wsWriter struct{ c *websocket.Conn }
+func (w wsWriter) Write(p []byte) (int, error) { return len(p), w.c.WriteMessage(websocket.TextMessage, p) }
 
 func nullIfEmpty(b []byte) interface{} { if len(b) == 0 { return nil }; return b }
 
