@@ -98,6 +98,8 @@ func main() {
     mux.HandleFunc("/api/ssh/connections/", withAuth(handleConnectionByID))
     mux.HandleFunc("/api/ssh/run", withAuth(handleRunCommand))
     mux.HandleFunc("/api/ssh/live", withAuth(handleLiveConnections))
+    mux.HandleFunc("/api/ssh/live/ws", withAuth(handleLiveWS))
+    mux.HandleFunc("/api/health/ws", handleHealthWS)
     mux.HandleFunc("/api/ssh/stream", withAuth(handleStreamCommand))
 
     port := strings.TrimSpace(os.Getenv("SERVICE_PORT"))
@@ -134,11 +136,18 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func withAuth(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         authz := strings.TrimSpace(r.Header.Get("Authorization"))
-        if authz == "" || !strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+        token := ""
+        if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+            token = strings.TrimSpace(authz[len("bearer "):])
+        }
+        if token == "" {
+            // Allow access_token via query for WebSocket where custom headers are not supported
+            token = strings.TrimSpace(r.URL.Query().Get("access_token"))
+        }
+        if token == "" {
             writeJSON(w, http.StatusUnauthorized, map[string]string{"error":"unauthorized"})
             return
         }
-        token := strings.TrimSpace(authz[len("bearer "):])
         email, exp, err := parseJWT(token)
         if err != nil {
             writeJSON(w, http.StatusUnauthorized, map[string]string{"error":"unauthorized"})
@@ -374,6 +383,7 @@ func handleRunCommand(w http.ResponseWriter, r *http.Request, email string) {
     if payload.KeepaliveSec > 0 { ttl = time.Duration(payload.KeepaliveSec) * time.Second }
     client, reused, err := getOrDialClient(email, payload.ConnectionID, fmt.Sprintf("%s:%d", host, port), cfg, ttl, time.Duration(payload.TimeoutSec)*time.Second)
     if err != nil { writeJSON(w,502,map[string]string{"error":"ssh dial failed"}); return }
+    go broadcastLive(email)
 
     session, err := client.NewSession()
     if err != nil { writeJSON(w,500,map[string]string{"error":"ssh session failed"}); return }
@@ -428,8 +438,9 @@ func handleStreamCommand(w http.ResponseWriter, r *http.Request, email string) {
     ttl := connTTL; if keepalive > 0 { ttl = time.Duration(keepalive)*time.Second }
     client, _, err := getOrDialClient(email, id, fmt.Sprintf("%s:%d", host, port), cfg, ttl, time.Duration(timeout)*time.Second)
     if err != nil { http.Error(w, "dial failed", 502); return }
+    go broadcastLive(email)
 
-    upgrader := websocket.Upgrader{ CheckOrigin: func(r *http.Request) bool { return true } }
+    upgrader := websocket.Upgrader{ CheckOrigin: wsOriginChecker }
     c, err := upgrader.Upgrade(w, r, nil)
     if err != nil { return }
     defer c.Close()
@@ -453,6 +464,114 @@ func handleStreamCommand(w http.ResponseWriter, r *http.Request, email string) {
 
 type wsWriter struct{ c *websocket.Conn }
 func (w wsWriter) Write(p []byte) (int, error) { return len(p), w.c.WriteMessage(websocket.TextMessage, p) }
+
+// wsOriginChecker allows WS only from configured origins (or all if unset).
+func wsOriginChecker(r *http.Request) bool {
+    origin := strings.TrimSpace(r.Header.Get("Origin"))
+    // Allow non-browser or same-origin requests with no Origin header
+    if origin == "" { return true }
+    allowed := strings.Split(strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")), ",")
+    if len(allowed) == 1 && strings.TrimSpace(allowed[0]) == "" {
+        return true
+    }
+    for _, a := range allowed {
+        if strings.TrimSpace(a) == origin { return true }
+    }
+    return false
+}
+
+// handleHealthWS upgrades to WebSocket and sends a simple probe message.
+func handleHealthWS(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet { w.Header().Set("Allow","GET"); w.WriteHeader(http.StatusMethodNotAllowed); return }
+    upgrader := websocket.Upgrader{ CheckOrigin: wsOriginChecker }
+    c, err := upgrader.Upgrade(w, r, nil)
+    if err != nil { return }
+    defer c.Close()
+    _ = c.WriteMessage(websocket.TextMessage, []byte("ws-ok"))
+}
+
+// Live connections WebSocket
+var (
+    subsMu      = &sync.Mutex{}
+    subscribers = map[string]map[*websocket.Conn]struct{}{}
+)
+
+func handleLiveWS(w http.ResponseWriter, r *http.Request, email string) {
+    if r.Method != http.MethodGet { w.Header().Set("Allow","GET"); w.WriteHeader(http.StatusMethodNotAllowed); return }
+    upgrader := websocket.Upgrader{ CheckOrigin: wsOriginChecker }
+    c, err := upgrader.Upgrade(w, r, nil)
+    if err != nil { return }
+    // Register
+    subsMu.Lock()
+    if subscribers[email] == nil { subscribers[email] = make(map[*websocket.Conn]struct{}) }
+    subscribers[email][c] = struct{}{}
+    subsMu.Unlock()
+    // Ensure cleanup on close
+    defer func(){
+        subsMu.Lock()
+        delete(subscribers[email], c)
+        if len(subscribers[email]) == 0 { delete(subscribers, email) }
+        subsMu.Unlock()
+        _ = c.Close()
+    }()
+    // Send initial snapshot
+    sendLive(email, c)
+    // Keep connection open; read loop to detect close
+    c.SetReadLimit(512)
+    c.SetReadDeadline(time.Now().Add(60 * time.Second))
+    c.SetPongHandler(func(string) error { c.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })
+    for {
+        if _, _, err := c.ReadMessage(); err != nil { break }
+    }
+}
+
+type liveEntry struct {
+    ID        int64     `json:"id"`
+    LastUsed  time.Time `json:"last_used"`
+    ExpiresAt time.Time `json:"expires_at"`
+}
+
+func snapshotLive(email string) []liveEntry {
+    prefix := email + "#"
+    now := time.Now()
+    activeMu.Lock()
+    out := make([]liveEntry, 0)
+    for k, ac := range activeConns {
+        if strings.HasPrefix(k, prefix) {
+            parts := strings.Split(k, "#")
+            if len(parts) == 2 {
+                if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+                    e := liveEntry{ID: id, LastUsed: ac.lastUsed, ExpiresAt: ac.lastUsed.Add(ac.ttl)}
+                    if e.ExpiresAt.After(now) { out = append(out, e) }
+                }
+            }
+        }
+    }
+    activeMu.Unlock()
+    return out
+}
+
+func sendLive(email string, c *websocket.Conn) {
+    payload := map[string]any{"type": "live", "live": snapshotLive(email)}
+    b, _ := json.Marshal(payload)
+    _ = c.WriteMessage(websocket.TextMessage, b)
+}
+
+func broadcastLive(email string) {
+    subsMu.Lock()
+    conns := make([]*websocket.Conn, 0, len(subscribers[email]))
+    for conn := range subscribers[email] { conns = append(conns, conn) }
+    subsMu.Unlock()
+    if len(conns) == 0 { return }
+    payload := map[string]any{"type": "live", "live": snapshotLive(email)}
+    b, _ := json.Marshal(payload)
+    for _, c := range conns {
+        if err := c.WriteMessage(websocket.TextMessage, b); err != nil {
+            subsMu.Lock(); delete(subscribers[email], c); subsMu.Unlock()
+            _ = c.Close()
+        }
+    }
+}
 
 func nullIfEmpty(b []byte) interface{} { if len(b) == 0 { return nil }; return b }
 

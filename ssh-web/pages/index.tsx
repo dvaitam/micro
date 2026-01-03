@@ -92,6 +92,7 @@ export default function Home() {
     url.searchParams.set('id', String(id))
     url.searchParams.set('cmd', run.command)
     url.searchParams.set('keepalive_seconds', String(run.keepalive))
+    if (token) url.searchParams.set('access_token', token)
     const wsUrl = url.toString().replace('https://', 'wss://').replace('http://', 'ws://')
     const ws = new WebSocket(wsUrl)
     ws.onmessage = (ev) => {
@@ -108,7 +109,26 @@ export default function Home() {
     const data = await parseJsonSafe(res)
     if (res.ok) setLive(data.live || [])
   }
-  useEffect(() => { if (token) { loadConnections(); loadLive(); const t = setInterval(loadLive, 5000); return () => clearInterval(t) } }, [token])
+  // Switch from polling to WebSocket live updates
+  useEffect(() => {
+    if (!token) return
+    loadConnections()
+    try {
+      const url = new URL(`${baseURL.replace(/\/$/, '')}/api/ssh/live/ws`)
+      url.searchParams.set('access_token', token)
+      const wsUrl = url.toString().replace('https://', 'wss://').replace('http://', 'ws://')
+      const ws = new WebSocket(wsUrl)
+      ws.onmessage = (ev) => {
+        try {
+          const txt = typeof ev.data === 'string' ? ev.data : ''
+          const msg = JSON.parse(txt)
+          if (msg && msg.type === 'live' && Array.isArray(msg.live)) setLive(msg.live)
+        } catch {}
+      }
+      ws.onerror = () => setMessage('live stream error')
+      return () => ws.close()
+    } catch {}
+  }, [token])
   useEffect(() => {
     try {
       const st = localStorage.getItem('ssh_session_token') || ''
