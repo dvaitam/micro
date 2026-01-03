@@ -1,0 +1,12 @@
+# Node / Next.js
+node_modules/
+.next/
+.env*
+npm-debug.log*
+yarn-error.log
+package-lock.json
+
+# Editor
+.idea/
+.vscode/
+

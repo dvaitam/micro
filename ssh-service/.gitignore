@@ -1,0 +1,11 @@
+# Go build artifacts
+/ssh-service
+*.exe
+*.test
+*.out
+*.log
+
+# IDE/editor
+.idea/
+.vscode/
+

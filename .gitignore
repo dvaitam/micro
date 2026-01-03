@@ -26,3 +26,18 @@ xcuserdata/
 .build/
 
 iMessage/Pods/
+
+# Node / Next.js
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+npm-debug.log*
+yarn-error.log
+
+# Go build outputs
+**/*.exe
+**/*.test
+**/*.out
+**/*.log
+bin/
