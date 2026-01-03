@@ -41,3 +41,4 @@ yarn-error.log
 **/*.out
 **/*.log
 bin/
+ssh-service/ssh-service
