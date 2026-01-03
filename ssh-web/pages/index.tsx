@@ -199,9 +199,22 @@ export default function Home() {
             <h3>Live</h3>
             <ul style={{ listStyle: 'none', padding: 0 }}>
               {live.map(l => (
-                <li key={l.id} style={{ padding: 8, marginTop: 6, border: '1px solid #ddd', borderRadius: 6 }}>
-                  #{l.id}
-                  <div style={{ fontSize: 12, color: '#555' }}>expires {new Date(l.expires_at).toLocaleTimeString()}</div>
+                <li key={l.id} style={{ padding: 8, marginTop: 6, border: '1px solid #ddd', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    #{l.id}
+                    <div style={{ fontSize: 12, color: '#555' }}>expires {new Date(l.expires_at).toLocaleTimeString()}</div>
+                  </div>
+                  <button title="Disconnect" aria-label="Disconnect" onClick={async () => {
+                    try {
+                      const res = await fetch(`${baseURL}/api/ssh/live/${l.id}`, { method: 'DELETE', headers: { ...authz } })
+                      if (!res.ok) {
+                        const data = await parseJsonSafe(res)
+                        setMessage(data.error || 'disconnect failed')
+                      }
+                    } catch (e:any) {
+                      setMessage(e?.message || 'disconnect failed')
+                    }
+                  }} style={{ background: 'transparent', border: 'none', color: '#d32f2f', fontSize: 18, cursor: 'pointer' }}>×</button>
                 </li>
               ))}
             </ul>

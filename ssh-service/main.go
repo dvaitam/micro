@@ -99,6 +99,7 @@ func main() {
     mux.HandleFunc("/api/ssh/run", withAuth(handleRunCommand))
     mux.HandleFunc("/api/ssh/live", withAuth(handleLiveConnections))
     mux.HandleFunc("/api/ssh/live/ws", withAuth(handleLiveWS))
+    mux.HandleFunc("/api/ssh/live/", withAuth(handleLiveDelete))
     mux.HandleFunc("/api/health/ws", handleHealthWS)
     mux.HandleFunc("/api/ssh/stream", withAuth(handleStreamCommand))
 
@@ -694,4 +695,21 @@ func handleLiveConnections(w http.ResponseWriter, r *http.Request, email string)
         if e.ExpiresAt.After(now) { filtered = append(filtered, e) }
     }
     writeJSON(w, 200, map[string]any{"live": filtered})
+}
+
+// Disconnect a live connection: DELETE /api/ssh/live/{id}
+func handleLiveDelete(w http.ResponseWriter, r *http.Request, email string) {
+    if r.Method != http.MethodDelete { w.Header().Set("Allow","DELETE"); w.WriteHeader(http.StatusMethodNotAllowed); return }
+    idStr := strings.TrimPrefix(r.URL.Path, "/api/ssh/live/")
+    id, err := strconv.ParseInt(idStr, 10, 64)
+    if err != nil || id <= 0 { writeJSON(w, 400, map[string]string{"error":"invalid id"}); return }
+    key := keyFor(email, id)
+    activeMu.Lock()
+    if ac, ok := activeConns[key]; ok {
+        _ = ac.client.Close()
+        delete(activeConns, key)
+    }
+    activeMu.Unlock()
+    go broadcastLive(email)
+    writeJSON(w, 200, map[string]string{"status":"disconnected"})
 }
