@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent } from 'react'
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 
@@ -23,7 +24,13 @@ export default function Home() {
   const [live, setLive] = useState<{id:number; last_used:string; expires_at:string}[]>([])
   const [loading, setLoading] = useState(false)
   const [lastResult, setLastResult] = useState('')
+  const [trackpadStatus, setTrackpadStatus] = useState('Idle')
   const authz = useMemo(() => token ? { Authorization: `Bearer ${token}` } : {}, [token])
+  const trackpadLastSend = useRef(0)
+  const trackpadSending = useRef(false)
+  const trackpadPending = useRef<{dx:number; dy:number} | null>(null)
+  const trackpadActive = useRef(false)
+  const lastPointer = useRef<{x:number; y:number} | null>(null)
 
   const parseJsonSafe = async (res: Response) => {
     const ct = (res.headers.get('content-type') || '').toLowerCase()
@@ -108,6 +115,99 @@ export default function Home() {
     const res = await fetch(`${baseURL}/api/ssh/live`, { headers: { ...authz } })
     const data = await parseJsonSafe(res)
     if (res.ok) setLive(data.live || [])
+  }
+
+  const trackpadConnID = () => selectedId ?? run.id
+  const sendTrackpadMove = async (dx: number, dy: number) => {
+    if (dx === 0 && dy === 0) return
+    const connID = trackpadConnID()
+    if (!connID) { setMessage('Select a connection before using the trackpad'); return }
+    if (trackpadSending.current) { trackpadPending.current = { dx, dy }; return }
+    trackpadSending.current = true
+    trackpadPending.current = null
+    setTrackpadStatus(`Sending (${dx}, ${dy})…`)
+    try {
+      const res = await fetch(`${baseURL}/api/ssh/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authz },
+        body: JSON.stringify({
+          connection_id: connID,
+          command: `echo "M, ${dx},${dy}" > /dev/ttyAMA0`,
+          timeout_seconds: 3,
+          keepalive_seconds: run.keepalive,
+        }),
+      })
+      const data = await parseJsonSafe(res)
+      if (!res.ok) throw new Error(data.error || 'send failed')
+      setTrackpadStatus(`Sent (${dx}, ${dy}) at ${new Date().toLocaleTimeString()}`)
+    } catch (e:any) {
+      const err = e?.message || 'send failed'
+      setTrackpadStatus(`Failed: ${err}`)
+      setMessage(`Trackpad send failed: ${err}`)
+    }
+    trackpadSending.current = false
+    if (trackpadPending.current) {
+      const next = trackpadPending.current
+      trackpadPending.current = null
+      sendTrackpadMove(next.dx, next.dy)
+    }
+  }
+
+  const sendClick = async (type: 1 | 2) => {
+    const connID = trackpadConnID()
+    if (!connID) { setMessage('Select a connection before using the trackpad'); return }
+    setTrackpadStatus(`Sending click ${type}…`)
+    try {
+      const res = await fetch(`${baseURL}/api/ssh/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authz },
+        body: JSON.stringify({
+          connection_id: connID,
+          command: `echo "C, ${type}" > /dev/ttyAMA0`,
+          timeout_seconds: 3,
+          keepalive_seconds: run.keepalive,
+        }),
+      })
+      const data = await parseJsonSafe(res)
+      if (!res.ok) throw new Error(data.error || 'send failed')
+      setTrackpadStatus(`Click ${type} sent`)
+    } catch (e:any) {
+      const err = e?.message || 'send failed'
+      setTrackpadStatus(`Click failed: ${err}`)
+      setMessage(`Trackpad send failed: ${err}`)
+    }
+  }
+
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    trackpadActive.current = true
+    lastPointer.current = { x: e.clientX, y: e.clientY }
+    trackpadLastSend.current = 0
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+  }
+
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!trackpadActive.current) return
+    const last = lastPointer.current
+    lastPointer.current = { x: e.clientX, y: e.clientY }
+    if (!last) return
+    const dx = Math.round(e.clientX - last.x) * 10
+    const dy = Math.round(e.clientY - last.y) * 10
+    if (dx === 0 && dy === 0) return
+    const now = Date.now()
+    if (now - trackpadLastSend.current < 80) return
+    trackpadLastSend.current = now
+    sendTrackpadMove(dx, dy)
+  }
+
+  const handlePointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    trackpadActive.current = false
+    lastPointer.current = null
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+  }
+
+  const handlePointerLeave = () => {
+    trackpadActive.current = false
+    lastPointer.current = null
   }
   // Switch from polling to WebSocket live updates
   useEffect(() => {
@@ -234,6 +334,43 @@ export default function Home() {
           {lastResult && (
             <pre style={{ marginTop: 12, padding: 12, background: '#0f172a', color: '#e2e8f0', borderRadius: 8, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{lastResult}</pre>
           )}
+        </div>
+      )}
+
+      {token && (
+        <div style={{ padding: 16, border: '1px solid #ddd', borderRadius: 8, marginTop: 16 }}>
+          <h2>Trackpad</h2>
+          <p style={{ marginTop: 4, color: '#444', fontSize: 14 }}>
+            Move inside the area to send <code>echo "M, dx,dy" &gt; /dev/ttyAMA0</code> to the selected connection (or the Connection ID field above).
+          </p>
+          <div
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+            style={{
+              height: 220,
+              border: '1px solid #d0d7de',
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #f8fafc, #eef2ff)',
+              marginTop: 12,
+              position: 'relative',
+              overflow: 'hidden',
+              userSelect: 'none',
+            }}
+          >
+            <div style={{ position: 'absolute', top: 12, left: 12, color: '#475569', fontSize: 14 }}>
+              Hold mouse/touch and move — throttled 80ms, scaled x10
+            </div>
+            <div style={{ position: 'absolute', bottom: 12, right: 12, color: '#475569', fontSize: 13 }}>
+              Using ID: {trackpadConnID() || '—'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+            <button onClick={() => sendClick(1)}>Click</button>
+            <button onClick={() => sendClick(2)}>Double click</button>
+            <div style={{ fontSize: 13, color: '#374151' }}>{trackpadStatus}</div>
+          </div>
         </div>
       )}
     </div>
