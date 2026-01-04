@@ -27,8 +27,9 @@ export default function Home() {
   const [trackpadStatus, setTrackpadStatus] = useState('Idle')
   const authz = useMemo(() => token ? { Authorization: `Bearer ${token}` } : {}, [token])
   const trackpadLastSend = useRef(0)
-  const trackpadSending = useRef(false)
-  const trackpadPending = useRef<{dx:number; dy:number} | null>(null)
+  // Control channel over WebSocket
+  const controlWS = useRef<WebSocket | null>(null)
+  const controlWSIntendedId = useRef<number | null>(null)
   const trackpadActive = useRef(false)
   const lastPointer = useRef<{x:number; y:number} | null>(null)
 
@@ -118,58 +119,49 @@ export default function Home() {
   }
 
   const trackpadConnID = () => selectedId ?? run.id
-  const sendTrackpadMove = async (dx: number, dy: number) => {
+  const ensureControlWS = () => {
+    const connID = trackpadConnID()
+    if (!token || !connID) return null
+    if (controlWS.current && controlWS.current.readyState === WebSocket.OPEN && controlWSIntendedId.current === connID) return controlWS.current
+    try {
+      const url = new URL(`${baseURL.replace(/\/$/, '')}/api/ssh/control/ws`)
+      url.searchParams.set('id', String(connID))
+      url.searchParams.set('keepalive_seconds', String(run.keepalive))
+      if (token) url.searchParams.set('access_token', token)
+      const wsUrl = url.toString().replace('https://', 'wss://').replace('http://', 'ws://')
+      const ws = new WebSocket(wsUrl)
+      controlWS.current = ws
+      controlWSIntendedId.current = connID
+      ws.onopen = () => setTrackpadStatus('Control connected')
+      ws.onclose = () => { setTrackpadStatus('Control disconnected'); if (controlWS.current === ws) { controlWS.current = null } }
+      ws.onerror = () => setTrackpadStatus('Control error')
+      ws.onmessage = () => {}
+      return ws
+    } catch {
+      return null
+    }
+  }
+  const sendTrackpadMove = (dx: number, dy: number) => {
     if (dx === 0 && dy === 0) return
     const connID = trackpadConnID()
     if (!connID) { setMessage('Select a connection before using the trackpad'); return }
-    if (trackpadSending.current) { trackpadPending.current = { dx, dy }; return }
-    trackpadSending.current = true
-    trackpadPending.current = null
-    setTrackpadStatus(`Sending (${dx}, ${dy})…`)
+    const ws = ensureControlWS()
+    if (!ws || ws.readyState !== WebSocket.OPEN) { setTrackpadStatus('Connecting…'); return }
     try {
-      const res = await fetch(`${baseURL}/api/ssh/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authz },
-        body: JSON.stringify({
-          connection_id: connID,
-          command: `echo "M, ${dx},${dy}" > /dev/ttyAMA0`,
-          timeout_seconds: 3,
-          keepalive_seconds: run.keepalive,
-        }),
-      })
-      const data = await parseJsonSafe(res)
-      if (!res.ok) throw new Error(data.error || 'send failed')
+      ws.send(JSON.stringify({ type: 'move', dx, dy }))
       setTrackpadStatus(`Sent (${dx}, ${dy}) at ${new Date().toLocaleTimeString()}`)
     } catch (e:any) {
-      const err = e?.message || 'send failed'
-      setTrackpadStatus(`Failed: ${err}`)
-      setMessage(`Trackpad send failed: ${err}`)
-    }
-    trackpadSending.current = false
-    if (trackpadPending.current) {
-      const next = trackpadPending.current
-      trackpadPending.current = null
-      sendTrackpadMove(next.dx, next.dy)
+      setTrackpadStatus(`Failed: ${e?.message || 'send failed'}`)
     }
   }
 
-  const sendClick = async (type: 1 | 2) => {
+  const sendClick = (type: 1 | 2) => {
     const connID = trackpadConnID()
     if (!connID) { setMessage('Select a connection before using the trackpad'); return }
-    setTrackpadStatus(`Sending click ${type}…`)
+    const ws = ensureControlWS()
+    if (!ws || ws.readyState !== WebSocket.OPEN) { setTrackpadStatus('Connecting…'); return }
     try {
-      const res = await fetch(`${baseURL}/api/ssh/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authz },
-        body: JSON.stringify({
-          connection_id: connID,
-          command: `echo "C, ${type}" > /dev/ttyAMA0`,
-          timeout_seconds: 3,
-          keepalive_seconds: run.keepalive,
-        }),
-      })
-      const data = await parseJsonSafe(res)
-      if (!res.ok) throw new Error(data.error || 'send failed')
+      ws.send(JSON.stringify({ type: 'click', button: type }))
       setTrackpadStatus(`Click ${type} sent`)
     } catch (e:any) {
       const err = e?.message || 'send failed'
@@ -229,6 +221,21 @@ export default function Home() {
       return () => ws.close()
     } catch {}
   }, [token])
+  // Maintain control WebSocket when token/selection changes
+  useEffect(() => {
+    const id = trackpadConnID()
+    if (!token || !id) {
+      if (controlWS.current) { try { controlWS.current.close() } catch {} controlWS.current = null }
+      controlWSIntendedId.current = null
+      return
+    }
+    // Reconnect only if id changed or socket not open
+    if (!controlWS.current || controlWS.current.readyState !== WebSocket.OPEN || controlWSIntendedId.current !== id) {
+      if (controlWS.current) { try { controlWS.current.close() } catch {} controlWS.current = null }
+      ensureControlWS()
+    }
+    return () => {}
+  }, [token, selectedId, run.keepalive])
   useEffect(() => {
     try {
       const st = localStorage.getItem('ssh_session_token') || ''
@@ -341,7 +348,7 @@ export default function Home() {
         <div style={{ padding: 16, border: '1px solid #ddd', borderRadius: 8, marginTop: 16 }}>
           <h2>Trackpad</h2>
           <p style={{ marginTop: 4, color: '#444', fontSize: 14 }}>
-            Move inside the area to send <code>echo "M, dx,dy" &gt; /dev/ttyAMA0</code> to the selected connection (or the Connection ID field above).
+            Sends movements over WebSocket and echoes to <code>/dev/ttyAMA0</code> on the selected connection.
           </p>
           <div
             onPointerDown={handlePointerDown}

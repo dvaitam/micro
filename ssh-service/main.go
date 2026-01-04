@@ -100,6 +100,8 @@ func main() {
     mux.HandleFunc("/api/ssh/live", withAuth(handleLiveConnections))
     mux.HandleFunc("/api/ssh/live/ws", withAuth(handleLiveWS))
     mux.HandleFunc("/api/ssh/live/", withAuth(handleLiveDelete))
+    // Trackpad/control input over WebSocket
+    mux.HandleFunc("/api/ssh/control/ws", withAuth(handleControlWS))
     mux.HandleFunc("/api/health/ws", handleHealthWS)
     mux.HandleFunc("/api/ssh/stream", withAuth(handleStreamCommand))
 
@@ -523,6 +525,90 @@ func handleLiveWS(w http.ResponseWriter, r *http.Request, email string) {
     c.SetPongHandler(func(string) error { c.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })
     for {
         if _, _, err := c.ReadMessage(); err != nil { break }
+    }
+}
+
+// handleControlWS maintains a WS to receive control events (e.g., trackpad/click)
+// and forwards them to the SSH target as short commands.
+// Query params: id (connection id, required), keepalive_seconds, timeout_seconds
+// Messages from client (text):
+//   {"type":"move","dx":int,"dy":int}
+//   {"type":"click","button":1|2}
+func handleControlWS(w http.ResponseWriter, r *http.Request, email string) {
+    if r.Method != http.MethodGet { w.Header().Set("Allow","GET"); w.WriteHeader(http.StatusMethodNotAllowed); return }
+    q := r.URL.Query()
+    id, _ := strconv.ParseInt(q.Get("id"), 10, 64)
+    if id == 0 { http.Error(w, "missing id", http.StatusBadRequest); return }
+    keepalive, _ := strconv.Atoi(q.Get("keepalive_seconds"))
+    timeout, _ := strconv.Atoi(q.Get("timeout_seconds"))
+    if timeout <= 0 { timeout = 30 }
+
+    // Load connection and secrets
+    var host, username string
+    var port int
+    var passEnc, keyEnc, phrEnc []byte
+    err := db.QueryRow(`SELECT host, port, username, password_enc, private_key_enc, passphrase_enc FROM ssh_connections WHERE id=? AND owner_email=?`, id, email).
+        Scan(&host, &port, &username, &passEnc, &keyEnc, &phrEnc)
+    if err != nil { http.Error(w, "not found", http.StatusNotFound); return }
+
+    var auths []ssh.AuthMethod
+    if len(keyEnc) > 0 {
+        keyPem, err := openSeal(keyEnc); if err != nil { http.Error(w, "key decrypt", 500); return }
+        var signer ssh.Signer
+        if len(phrEnc) > 0 { pw, _ := openSeal(phrEnc); signer, err = ssh.ParsePrivateKeyWithPassphrase(keyPem, pw) } else { signer, err = ssh.ParsePrivateKey(keyPem) }
+        if err != nil { http.Error(w, "bad key", 400); return }
+        auths = append(auths, ssh.PublicKeys(signer))
+    }
+    if len(passEnc) > 0 { pw, err := openSeal(passEnc); if err != nil { http.Error(w, "pw decrypt", 500); return }; auths = append(auths, ssh.Password(string(pw))) }
+    if len(auths) == 0 { http.Error(w, "no credentials", 400); return }
+
+    cfg := &ssh.ClientConfig{ User: username, Auth: auths, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: time.Duration(timeout)*time.Second }
+    ttl := connTTL; if keepalive > 0 { ttl = time.Duration(keepalive)*time.Second }
+    client, _, err := getOrDialClient(email, id, fmt.Sprintf("%s:%d", host, port), cfg, ttl, time.Duration(timeout)*time.Second)
+    if err != nil { http.Error(w, "dial failed", 502); return }
+    go broadcastLive(email)
+
+    upgrader := websocket.Upgrader{ CheckOrigin: wsOriginChecker }
+    c, err := upgrader.Upgrade(w, r, nil)
+    if err != nil { return }
+    defer c.Close()
+
+    type ctrlMsg struct {
+        Type   string `json:"type"`
+        DX     int    `json:"dx"`
+        DY     int    `json:"dy"`
+        Button int    `json:"button"`
+    }
+
+    // Simple helper to run a short command and ignore output
+    runShort := func(cmd string) {
+        session, err := client.NewSession()
+        if err != nil { _ = c.WriteMessage(websocket.TextMessage, []byte("ERR: session")); return }
+        defer session.Close()
+        // We don't stream; just execute and ignore errors (best-effort)
+        _, _ = session.CombinedOutput(cmd)
+    }
+
+    // Read loop
+    for {
+        mt, data, err := c.ReadMessage()
+        if err != nil { break }
+        if mt != websocket.TextMessage && mt != websocket.BinaryMessage { continue }
+        // Expect JSON text; ignore binary for now
+        var m ctrlMsg
+        if err := json.Unmarshal(data, &m); err != nil { continue }
+        switch strings.ToLower(strings.TrimSpace(m.Type)) {
+        case "move":
+            // Compose echo
+            cmd := fmt.Sprintf("echo \"M, %d,%d\" > /dev/ttyAMA0", m.DX, m.DY)
+            runShort(cmd)
+        case "click":
+            if m.Button != 1 && m.Button != 2 { m.Button = 1 }
+            cmd := fmt.Sprintf("echo \"C, %d\" > /dev/ttyAMA0", m.Button)
+            runShort(cmd)
+        default:
+            // ignore
+        }
     }
 }
 
