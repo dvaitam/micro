@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/root"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SSH Web (Native)"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:paddingBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Server"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/authBaseUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Auth base URL (e.g. http://host:8082)"
+            android:inputType="textUri" />
+
+        <EditText
+            android:id="@+id/sshBaseUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="SSH base URL (e.g. http://host:8086)"
+            android:inputType="textUri" />
+
+        <Button
+            android:id="@+id/saveBaseUrl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Save URLs" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <LinearLayout
+            android:id="@+id/loginSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Login via Email OTP"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/email"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="email"
+                android:inputType="textEmailAddress" />
+
+            <Button
+                android:id="@+id/requestOtp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Request OTP" />
+
+            <EditText
+                android:id="@+id/otp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="otp"
+                android:inputType="number" />
+
+            <Button
+                android:id="@+id/verifyOtp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Verify OTP" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#374151"
+            android:paddingTop="6dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connections"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/refreshConnections"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Refresh" />
+
+        <TextView
+            android:id="@+id/selectedConnection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Selected: none" />
+
+        <LinearLayout
+            android:id="@+id/connectionsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="New Connection"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/newName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="name" />
+
+        <EditText
+            android:id="@+id/newHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="host" />
+
+        <EditText
+            android:id="@+id/newPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="port"
+            android:inputType="number" />
+
+        <EditText
+            android:id="@+id/newUsername"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="username" />
+
+        <EditText
+            android:id="@+id/newPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="password"
+            android:inputType="textPassword" />
+
+        <EditText
+            android:id="@+id/newPrivateKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="private key (PEM)"
+            android:inputType="textMultiLine"
+            android:minLines="3" />
+
+        <EditText
+            android:id="@+id/newPassphrase"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="passphrase" />
+
+        <Button
+            android:id="@+id/createConnection"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Create" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Run Command"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/command"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="command"
+            android:text="uname -a" />
+
+        <EditText
+            android:id="@+id/keepalive"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="keepalive seconds"
+            android:inputType="number"
+            android:text="300" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/runCommand"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Run" />
+
+            <ProgressBar
+                android:id="@+id/runProgress"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/commandOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#0f172a"
+            android:padding="10dp"
+            android:textColor="#e2e8f0"
+            android:fontFamily="monospace" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Live"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/refreshLive"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Refresh live" />
+
+        <LinearLayout
+            android:id="@+id/liveContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Trackpad"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Touch and drag below to send control events." />
+
+        <FrameLayout
+            android:id="@+id/trackpadArea"
+            android:layout_width="match_parent"
+            android:layout_height="180dp"
+            android:background="#f1f5f9"
+            android:padding="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/clickOnce"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Click" />
+
+            <Button
+                android:id="@+id/clickDouble"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Double" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/trackpadStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Idle" />
+
+    </LinearLayout>
+</ScrollView>
