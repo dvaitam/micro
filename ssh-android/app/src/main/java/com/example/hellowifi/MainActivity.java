@@ -5,6 +5,8 @@ import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -23,6 +25,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import okhttp3.Call;
@@ -63,7 +67,7 @@ public class MainActivity extends AppCompatActivity {
     private EditText newPrivateKey;
     private EditText newPassphrase;
 
-    private EditText commandInput;
+    private AutoCompleteTextView commandInput;
     private EditText keepaliveInput;
     private TextView commandOutput;
     private Button runCommandButton;
@@ -85,6 +89,8 @@ public class MainActivity extends AppCompatActivity {
     private float lastY = 0f;
     private boolean trackpadActive = false;
     private boolean runInProgress = false;
+    private ArrayAdapter<String> commandAdapter;
+    private List<String> commandHistory;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,6 +134,16 @@ public class MainActivity extends AppCompatActivity {
         commandOutput = findViewById(R.id.commandOutput);
         runCommandButton = findViewById(R.id.runCommand);
         runProgress = findViewById(R.id.runProgress);
+        commandHistory = new ArrayList<>();
+        commandAdapter = new ArrayAdapter<>(this, android.R.layout.simple_dropdown_item_1line, commandHistory);
+        commandInput.setAdapter(commandAdapter);
+        commandInput.setThreshold(0);
+        commandInput.setOnClickListener(v -> commandInput.showDropDown());
+        commandInput.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                commandInput.showDropDown();
+            }
+        });
 
         liveContainer = findViewById(R.id.liveContainer);
         trackpadArea = findViewById(R.id.trackpadArea);
@@ -283,6 +299,7 @@ public class MainActivity extends AppCompatActivity {
                 setStatus("Logged in");
                 updateLoginUi();
                 loadConnections();
+                loadCommandHistory();
                 connectLiveWs();
             }
         });
@@ -325,6 +342,7 @@ public class MainActivity extends AppCompatActivity {
                 updateLoginUi();
                 connectLiveWs();
                 loadConnections();
+                loadCommandHistory();
             }
         });
     }
@@ -449,6 +467,7 @@ public class MainActivity extends AppCompatActivity {
             setStatus("Enter a command");
             return;
         }
+        addCommandToHistory(cmd);
         int keepalive = parseIntOrDefault(keepaliveInput.getText().toString().trim(), 300);
 
         if (runInProgress) return;
@@ -500,6 +519,65 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG, "Command WS closed: " + reason);
                 setRunInProgress(false);
             }
+        });
+    }
+
+    private void loadCommandHistory() {
+        String base = getSshBaseUrl();
+        if (!ensureAuthReady(base)) return;
+        HttpUrl url = buildUrl(base, "/api/ssh/commands");
+        if (url == null) return;
+        Request request = new Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer " + accessToken)
+            .get()
+            .build();
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                Log.w(TAG, "Command history load failed", e);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                String text = response.body() != null ? response.body().string() : "";
+                if (!response.isSuccessful()) {
+                    Log.w(TAG, "Command history load failed: " + text);
+                    return;
+                }
+                JsonObject obj = parseJsonObject(text);
+                if (obj == null || !obj.has("commands")) {
+                    Log.w(TAG, "Command history invalid response");
+                    return;
+                }
+                JsonArray arr = obj.getAsJsonArray("commands");
+                List<String> updated = new ArrayList<>();
+                for (JsonElement el : arr) {
+                    String cmd = el != null ? el.getAsString() : "";
+                    if (!TextUtils.isEmpty(cmd)) {
+                        updated.add(cmd);
+                    }
+                }
+                runOnUiThread(() -> {
+                    commandHistory.clear();
+                    commandHistory.addAll(updated);
+                    commandAdapter.notifyDataSetChanged();
+                });
+            }
+        });
+    }
+
+    private void addCommandToHistory(String cmd) {
+        if (TextUtils.isEmpty(cmd)) return;
+        runOnUiThread(() -> {
+            String normalized = cmd.trim();
+            for (int i = commandHistory.size() - 1; i >= 0; i--) {
+                if (commandHistory.get(i).equalsIgnoreCase(normalized)) {
+                    commandHistory.remove(i);
+                }
+            }
+            commandHistory.add(0, normalized);
+            commandAdapter.notifyDataSetChanged();
         });
     }
 

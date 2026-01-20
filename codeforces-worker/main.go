@@ -366,83 +366,83 @@ func verify1A(ctx context.Context, sub *submission, candidateBin string, produce
 }
 
 func buildCandidate(ctx context.Context, lang, srcPath, tmpDir string) (string, error) {
-    lang = strings.ToLower(strings.TrimSpace(lang))
-    switch lang {
-    case "go", "golang":
-        bin, stderr, err := goBuildBinary(ctx, srcPath, tmpDir, "candidate_go.bin")
-        if err != nil {
-            return "", errors.New(strings.TrimSpace(stderr))
-        }
-        return bin, nil
-    case "c":
-        bin := filepath.Join(tmpDir, "candidate_c.bin")
-        cmd := exec.CommandContext(ctx, "gcc", "-std=c17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
-        cmd.Dir = tmpDir
-        var stderr bytes.Buffer
-        cmd.Stderr = &stderr
-        if err := cmd.Run(); err != nil {
-            return "", errors.New(strings.TrimSpace(stderr.String()))
-        }
-        return bin, nil
-    case "cpp", "c++", "cc", "cxx":
-        bin := filepath.Join(tmpDir, "candidate_cpp.bin")
-        cmd := exec.CommandContext(ctx, "g++", "-std=c++17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
-        cmd.Dir = tmpDir
-        var stderr bytes.Buffer
-        cmd.Stderr = &stderr
-        if err := cmd.Run(); err != nil {
-            return "", errors.New(strings.TrimSpace(stderr.String()))
-        }
-        return bin, nil
-    case "java":
-        // Compile Java source (expect a class with main method, typically public class Main)
-        javac := exec.CommandContext(ctx, "javac", srcPath)
-        javac.Dir = tmpDir
-        var jerr bytes.Buffer
-        javac.Stderr = &jerr
-        if err := javac.Run(); err != nil {
-            return "", errors.New(strings.TrimSpace(jerr.String()))
-        }
-        // Create a wrapper script to execute the program via java with explicit classpath
-        wrapper := filepath.Join(tmpDir, "candidate_java.sh")
-        script := "#!/bin/sh\nexec java -Xss64m -Xms64m -Xmx256m -cp '" + tmpDir + "' Main\n"
-        if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-            return "", err
-        }
-        return wrapper, nil
-    case "rs", "rust":
-        bin := filepath.Join(tmpDir, "candidate_rs.bin")
-        cmd := exec.CommandContext(ctx, "rustc", "-O", srcPath, "-o", bin)
-        cmd.Dir = tmpDir
-        var stderr bytes.Buffer
-        cmd.Stderr = &stderr
-        if err := cmd.Run(); err != nil {
-            return "", errors.New(strings.TrimSpace(stderr.String()))
-        }
-        return bin, nil
-    case "kt", "kotlin":
-        // Build a runnable jar with Kotlin compiler
-        jar := filepath.Join(tmpDir, "candidate_kotlin.jar")
-        cmd := exec.CommandContext(ctx, "kotlinc", srcPath, "-include-runtime", "-d", jar)
-        cmd.Dir = tmpDir
-        var stderr bytes.Buffer
-        cmd.Stderr = &stderr
-        if err := cmd.Run(); err != nil {
-            return "", errors.New(strings.TrimSpace(stderr.String()))
-        }
-        // Wrapper script to run the jar
-        wrapper := filepath.Join(tmpDir, "candidate_kotlin.sh")
-        script := "#!/bin/sh\nexec java -Xss64m -Xms64m -Xmx256m -jar '" + jar + "'\n"
-        if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-            return "", err
-        }
-        return wrapper, nil
-    case "py", "python", "python3":
-        // Make script executable with shebang.
-        data, err := os.ReadFile(srcPath)
-        if err != nil {
-            return "", err
-        }
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch lang {
+	case "go", "golang":
+		bin, stderr, err := goBuildBinary(ctx, srcPath, tmpDir, "candidate_go.bin")
+		if err != nil {
+			return "", errors.New(strings.TrimSpace(stderr))
+		}
+		return bin, nil
+	case "c":
+		bin := filepath.Join(tmpDir, "candidate_c.bin")
+		cmd := exec.CommandContext(ctx, "gcc", "-std=c17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
+		cmd.Dir = tmpDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return bin, nil
+	case "cpp", "c++", "cc", "cxx":
+		bin := filepath.Join(tmpDir, "candidate_cpp.bin")
+		cmd := exec.CommandContext(ctx, "g++", "-std=c++17", "-O2", "-pipe", "-static", "-s", srcPath, "-o", bin)
+		cmd.Dir = tmpDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return bin, nil
+	case "java":
+		// Compile Java source (expect a class with main method, typically public class Main)
+		javac := exec.CommandContext(ctx, "javac", srcPath)
+		javac.Dir = tmpDir
+		var jerr bytes.Buffer
+		javac.Stderr = &jerr
+		if err := javac.Run(); err != nil {
+			return "", errors.New(strings.TrimSpace(jerr.String()))
+		}
+		// Create a wrapper script to execute the program via java with explicit classpath
+		wrapper := filepath.Join(tmpDir, "candidate_java.sh")
+		script := "#!/bin/sh\nexec java -Xss64m -Xms64m -Xmx256m -cp '" + tmpDir + "' Main\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+			return "", err
+		}
+		return wrapper, nil
+	case "rs", "rust":
+		bin := filepath.Join(tmpDir, "candidate_rs.bin")
+		cmd := exec.CommandContext(ctx, "rustc", "-O", srcPath, "-o", bin)
+		cmd.Dir = tmpDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return bin, nil
+	case "kt", "kotlin":
+		// Build a runnable jar with Kotlin compiler
+		jar := filepath.Join(tmpDir, "candidate_kotlin.jar")
+		cmd := exec.CommandContext(ctx, "kotlinc", srcPath, "-include-runtime", "-d", jar)
+		cmd.Dir = tmpDir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		// Wrapper script to run the jar
+		wrapper := filepath.Join(tmpDir, "candidate_kotlin.sh")
+		script := "#!/bin/sh\nexec java -Xss64m -Xms64m -Xmx256m -jar '" + jar + "'\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+			return "", err
+		}
+		return wrapper, nil
+	case "py", "python", "python3":
+		// Make script executable with shebang.
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return "", err
+		}
 		if !bytes.HasPrefix(data, []byte("#!")) {
 			data = append([]byte("#!/usr/bin/env python3\n"), data...)
 			if err := os.WriteFile(srcPath, data, 0o755); err != nil {
@@ -458,24 +458,24 @@ func buildCandidate(ctx context.Context, lang, srcPath, tmpDir string) (string, 
 }
 
 func submissionFilename(lang string) string {
-    switch strings.ToLower(strings.TrimSpace(lang)) {
-    case "go", "golang":
-        return "main.go"
-    case "c":
-        return "main.c"
-    case "cpp", "c++", "cc", "cxx":
-        return "main.cpp"
-    case "java":
-        return "Main.java"
-    case "py", "python", "python3":
-        return "main.py"
-    case "rs", "rust":
-        return "main.rs"
-    case "kt", "kotlin":
-        return "Main.kt"
-    default:
-        return "main.txt"
-    }
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "go", "golang":
+		return "main.go"
+	case "c":
+		return "main.c"
+	case "cpp", "c++", "cc", "cxx":
+		return "main.cpp"
+	case "java":
+		return "Main.java"
+	case "py", "python", "python3":
+		return "main.py"
+	case "rs", "rust":
+		return "main.rs"
+	case "kt", "kotlin":
+		return "Main.kt"
+	default:
+		return "main.txt"
+	}
 }
 
 func referenceFilename(sub *submission) string {

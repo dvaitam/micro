@@ -194,11 +194,12 @@
             android:text="Run Command"
             android:textStyle="bold" />
 
-        <EditText
+        <AutoCompleteTextView
             android:id="@+id/command"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="command"
+            android:inputType="text"
             android:text="uname -a" />
 
         <EditText
