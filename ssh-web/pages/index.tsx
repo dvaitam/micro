@@ -22,6 +22,7 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [live, setLive] = useState<{id:number; last_used:string; expires_at:string}[]>([])
+  const [commandHistory, setCommandHistory] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [lastResult, setLastResult] = useState('')
   const [trackpadStatus, setTrackpadStatus] = useState('Idle')
@@ -57,6 +58,7 @@ export default function Home() {
           try { localStorage.setItem('ssh_session_token', data.session_token) } catch {}
         }
         await loadConnections(data.access_token)
+        await loadCommandHistory(data.access_token)
         setMessage('Logged in')
       } else {
         setMessage(data.error || 'verify failed')
@@ -73,6 +75,7 @@ export default function Home() {
     if (res.ok) {
       if (data.access_token) setToken(data.access_token)
       if (data.email) setEmail(data.email)
+      if (data.access_token) await loadCommandHistory(data.access_token)
     }
   }
   const loadConnections = async (tkn?: string) => {
@@ -82,6 +85,12 @@ export default function Home() {
     setLoading(false)
     if (res.ok) setConnections(data.connections || [])
     else setMessage(data.error || 'load failed')
+  }
+
+  const loadCommandHistory = async (tkn?: string) => {
+    const res = await fetch(`${baseURL}/api/ssh/commands`, { headers: { ...authz, ...(tkn ? { Authorization: `Bearer ${tkn}` } : {}) } })
+    const data = await parseJsonSafe(res)
+    if (res.ok) setCommandHistory(data.commands || [])
   }
 
   const [newConn, setNewConn] = useState({ name: '', host: '', port: 22, username: '', password: '', private_key: '', passphrase: '' })
@@ -96,6 +105,13 @@ export default function Home() {
   const runCommand = async () => {
     const id = selectedId ?? run.id
     setLastResult('')
+    if (run.command.trim()) {
+      setCommandHistory(prev => {
+        const normalized = run.command.trim()
+        const next = prev.filter(cmd => cmd.toLowerCase() !== normalized.toLowerCase())
+        return [normalized, ...next].slice(0, 200)
+      })
+    }
     const url = new URL(`${baseURL.replace(/\/$/, '')}/api/ssh/stream`)
     url.searchParams.set('id', String(id))
     url.searchParams.set('cmd', run.command)
@@ -334,7 +350,12 @@ export default function Home() {
           <h2>Run Command</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input placeholder="connection id" type="number" value={selectedId ?? run.id} onChange={e => setRun({ ...run, id: Number(e.target.value) })} />
-            <input placeholder="command" value={run.command} onChange={e => setRun({ ...run, command: e.target.value })} style={{ flex: 1 }} />
+            <input placeholder="command" list="command-history" value={run.command} onChange={e => setRun({ ...run, command: e.target.value })} style={{ flex: 1 }} />
+            <datalist id="command-history">
+              {commandHistory.map((cmd, idx) => (
+                <option value={cmd} key={`${cmd}-${idx}`} />
+              ))}
+            </datalist>
             <input placeholder="keepalive seconds" type="number" value={run.keepalive} onChange={e => setRun({ ...run, keepalive: Number(e.target.value) })} style={{ width: 140 }} />
             <button onClick={async () => { await runCommand(); if (message) setMessage(message) }}>Run</button>
           </div>
