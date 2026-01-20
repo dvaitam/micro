@@ -1131,7 +1131,6 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(64)`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id INT`,
-		`ALTER TABLE evaluations ADD COLUMN IF NOT EXISTS reviewied SMALLINT DEFAULT 0`,
 		// Problems table for listing/metadata and tag filtering
 		`CREATE TABLE IF NOT EXISTS problems (
 			id SERIAL PRIMARY KEY,
@@ -1144,6 +1143,21 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 			rating INT,
 			tags TEXT[],
 			UNIQUE (contest_id, index_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS evaluations (
+			id SERIAL PRIMARY KEY,
+			run_id TEXT,
+			provider TEXT,
+			model TEXT,
+			lang TEXT,
+			problem_id INT REFERENCES problems(id),
+			success BOOLEAN DEFAULT FALSE,
+			timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			prompt TEXT,
+			response TEXT,
+			stdout TEXT,
+			stderr TEXT,
+			reviewied SMALLINT DEFAULT 0
 		)`,
         `ALTER TABLE problems ADD COLUMN IF NOT EXISTS rating INT`,
         `ALTER TABLE problems ADD COLUMN IF NOT EXISTS tags TEXT[]`,

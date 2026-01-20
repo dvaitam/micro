@@ -173,6 +173,9 @@ func loadProblem(ctx context.Context, db *sql.DB, contest, index string) (*probl
 		WHERE contest_id = $1 AND UPPER(index_name) = UPPER($2)
 	`, contest, index).Scan(&p.Verifier, &p.ReferenceSolution)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("problem not found in database")
+		}
 		return nil, err
 	}
 	return &p, nil
@@ -206,11 +209,6 @@ func runVerification(ctx context.Context, sub *submission, prob *problem, produc
 		if err := os.WriteFile(refSrcPath, []byte(prob.ReferenceSolution), 0o644); err != nil {
 			return statusMessage{SubmissionID: sub.ID, Status: "failed", Verdict: "write reference failed: " + err.Error()}
 		}
-	}
-
-	// Special-case 1A: run tests directly so we can stream per-test status.
-	if strings.TrimSpace(sub.ContestID) == "1" && strings.EqualFold(sub.Index, "A") {
-		return verify1A(ctx, sub, candidateBin, producer, stream)
 	}
 
 	// Write and build verifier.
