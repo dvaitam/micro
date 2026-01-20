@@ -576,7 +576,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 runOnUiThread(() -> {
-                    mergeCommandHistory(updated);
+                    setCommandHistory(updated);
                     commandAdapter.notifyDataSetChanged();
                     saveLocalCommandHistory();
                 });
@@ -588,23 +588,30 @@ public class MainActivity extends AppCompatActivity {
         if (TextUtils.isEmpty(cmd)) return;
         runOnUiThread(() -> {
             String normalized = cmd.trim();
-            mergeCommandHistory(java.util.Collections.singletonList(normalized));
+            addToHistoryFront(normalized);
             commandAdapter.notifyDataSetChanged();
             saveLocalCommandHistory();
         });
     }
 
-    private void mergeCommandHistory(List<String> incoming) {
-        if (incoming == null || incoming.isEmpty()) return;
+    private void setCommandHistory(List<String> incoming) {
+        commandHistory.clear();
+        if (incoming == null) return;
         for (String cmd : incoming) {
-            if (TextUtils.isEmpty(cmd)) continue;
-            for (int i = commandHistory.size() - 1; i >= 0; i--) {
-                if (commandHistory.get(i).equalsIgnoreCase(cmd)) {
-                    commandHistory.remove(i);
-                }
+            if (!TextUtils.isEmpty(cmd)) {
+                commandHistory.add(cmd);
             }
-            commandHistory.add(0, cmd);
         }
+    }
+
+    private void addToHistoryFront(String cmd) {
+        if (TextUtils.isEmpty(cmd)) return;
+        for (int i = commandHistory.size() - 1; i >= 0; i--) {
+            if (commandHistory.get(i).equalsIgnoreCase(cmd)) {
+                commandHistory.remove(i);
+            }
+        }
+        commandHistory.add(0, cmd);
     }
 
     private void loadLocalCommandHistory() {
@@ -612,15 +619,16 @@ public class MainActivity extends AppCompatActivity {
         if (TextUtils.isEmpty(raw)) return;
         try {
             JsonArray arr = JsonParser.parseString(raw).getAsJsonArray();
-            commandHistory.clear();
+            List<String> updated = new ArrayList<>();
             for (JsonElement el : arr) {
                 if (el != null && !el.isJsonNull()) {
                     String cmd = el.getAsString();
                     if (!TextUtils.isEmpty(cmd)) {
-                        commandHistory.add(cmd);
+                        updated.add(cmd);
                     }
                 }
             }
+            setCommandHistory(updated);
             commandAdapter.notifyDataSetChanged();
         } catch (Exception e) {
             Log.w(TAG, "Failed to load local command history", e);
@@ -645,6 +653,7 @@ public class MainActivity extends AppCompatActivity {
             showToast("No command history yet");
             return;
         }
+        commandHistoryPopup.setAdapter(commandAdapter);
         commandHistoryPopup.show();
     }
 
