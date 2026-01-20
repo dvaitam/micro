@@ -194,13 +194,27 @@
             android:text="Run Command"
             android:textStyle="bold" />
 
-        <AutoCompleteTextView
-            android:id="@+id/command"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="command"
-            android:inputType="text"
-            android:text="uname -a" />
+            android:orientation="horizontal">
+
+            <AutoCompleteTextView
+                android:id="@+id/command"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="command"
+                android:inputType="text"
+                android:text="uname -a" />
+
+            <Button
+                android:id="@+id/commandHistory"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="History" />
+        </LinearLayout>
 
         <EditText
             android:id="@+id/keepalive"

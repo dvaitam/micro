@@ -14,6 +14,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.appcompat.widget.ListPopupWindow;
 import android.util.Log;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -72,6 +73,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView commandOutput;
     private Button runCommandButton;
     private ProgressBar runProgress;
+    private Button commandHistoryButton;
+    private ListPopupWindow commandHistoryPopup;
     private LinearLayout liveContainer;
     private FrameLayout trackpadArea;
     private TextView trackpadStatus;
@@ -105,6 +108,7 @@ public class MainActivity extends AppCompatActivity {
         loadPrefs();
         wireActions();
         updateLoginUi();
+        loadLocalCommandHistory();
 
         if (!TextUtils.isEmpty(sessionToken)) {
             refreshSession();
@@ -134,6 +138,7 @@ public class MainActivity extends AppCompatActivity {
         commandOutput = findViewById(R.id.commandOutput);
         runCommandButton = findViewById(R.id.runCommand);
         runProgress = findViewById(R.id.runProgress);
+        commandHistoryButton = findViewById(R.id.commandHistory);
         commandHistory = new ArrayList<>();
         commandAdapter = new ArrayAdapter<>(this, android.R.layout.simple_dropdown_item_1line, commandHistory);
         commandInput.setAdapter(commandAdapter);
@@ -143,6 +148,17 @@ public class MainActivity extends AppCompatActivity {
             if (hasFocus) {
                 commandInput.showDropDown();
             }
+        });
+        commandHistoryPopup = new ListPopupWindow(this);
+        commandHistoryPopup.setAnchorView(commandHistoryButton);
+        commandHistoryPopup.setAdapter(commandAdapter);
+        commandHistoryPopup.setOnItemClickListener((parent, view, position, id) -> {
+            String cmd = commandAdapter.getItem(position);
+            if (!TextUtils.isEmpty(cmd)) {
+                commandInput.setText(cmd);
+                commandInput.setSelection(cmd.length());
+            }
+            commandHistoryPopup.dismiss();
         });
 
         liveContainer = findViewById(R.id.liveContainer);
@@ -170,6 +186,7 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "Run clicked");
             runCommandStream();
         });
+        commandHistoryButton.setOnClickListener(v -> showCommandHistory());
 
         Button refreshLive = findViewById(R.id.refreshLive);
         refreshLive.setOnClickListener(v -> loadLive());
@@ -559,9 +576,9 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 runOnUiThread(() -> {
-                    commandHistory.clear();
-                    commandHistory.addAll(updated);
+                    mergeCommandHistory(updated);
                     commandAdapter.notifyDataSetChanged();
+                    saveLocalCommandHistory();
                 });
             }
         });
@@ -571,14 +588,64 @@ public class MainActivity extends AppCompatActivity {
         if (TextUtils.isEmpty(cmd)) return;
         runOnUiThread(() -> {
             String normalized = cmd.trim();
+            mergeCommandHistory(java.util.Collections.singletonList(normalized));
+            commandAdapter.notifyDataSetChanged();
+            saveLocalCommandHistory();
+        });
+    }
+
+    private void mergeCommandHistory(List<String> incoming) {
+        if (incoming == null || incoming.isEmpty()) return;
+        for (String cmd : incoming) {
+            if (TextUtils.isEmpty(cmd)) continue;
             for (int i = commandHistory.size() - 1; i >= 0; i--) {
-                if (commandHistory.get(i).equalsIgnoreCase(normalized)) {
+                if (commandHistory.get(i).equalsIgnoreCase(cmd)) {
                     commandHistory.remove(i);
                 }
             }
-            commandHistory.add(0, normalized);
+            commandHistory.add(0, cmd);
+        }
+    }
+
+    private void loadLocalCommandHistory() {
+        String raw = prefs.getString("command_history", "");
+        if (TextUtils.isEmpty(raw)) return;
+        try {
+            JsonArray arr = JsonParser.parseString(raw).getAsJsonArray();
+            commandHistory.clear();
+            for (JsonElement el : arr) {
+                if (el != null && !el.isJsonNull()) {
+                    String cmd = el.getAsString();
+                    if (!TextUtils.isEmpty(cmd)) {
+                        commandHistory.add(cmd);
+                    }
+                }
+            }
             commandAdapter.notifyDataSetChanged();
-        });
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to load local command history", e);
+        }
+    }
+
+    private void saveLocalCommandHistory() {
+        try {
+            JsonArray arr = new JsonArray();
+            for (String cmd : commandHistory) {
+                arr.add(cmd);
+            }
+            prefs.edit().putString("command_history", arr.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to save local command history", e);
+        }
+    }
+
+    private void showCommandHistory() {
+        if (commandHistory.isEmpty()) {
+            setStatus("No command history yet");
+            showToast("No command history yet");
+            return;
+        }
+        commandHistoryPopup.show();
     }
 
     private void loadLive() {
