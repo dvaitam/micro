@@ -1,5 +1,12 @@
 FROM golang:1.24-alpine AS build
+
+ARG GOPROXY=direct
+ARG GOSUMDB=off
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 WORKDIR /src
+
+RUN apk add --no-cache git
 COPY go.mod ./
 RUN go mod download
 COPY . .

@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="local/codeforces-worker:latest"
 ARCHIVE="/tmp/codeforces_worker_latest.tar"
 MANIFEST="${SCRIPT_DIR}/codeforces-worker-deployment.yaml"
-REMOTE_NODES=(k8s-cp-02 k8s-cp-03)
+REMOTE_NODES=(k8s-cp-03)
 POSTGRES_DSN="${POSTGRES_DSN:-postgres://postgres:orib98wBpwUr15btAqoF2PksuDMTtsfJfrMsnzFUVai2Wo87MzI4SWb1g7cOeakq@micro-postgres.default.svc.cluster.local:5432/postgres?sslmode=require}"
 KAFKA_BROKERS="${KAFKA_BROKERS:-kafka.default.svc.cluster.local:9092}"
 

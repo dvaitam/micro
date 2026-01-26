@@ -19,7 +19,7 @@ if [ -z "${CONFIG_DIR}" ]; then
 fi
 MANIFEST="${CONFIG_DIR}/codeforces-api-deployment.yaml"
 SERVICE="${CONFIG_DIR}/codeforces-api-service.yaml"
-REMOTE_NODES=(k8s-cp-02 k8s-cp-03)
+REMOTE_NODES=(k8s-cp-03)
 POSTGRES_DSN="${POSTGRES_DSN:-postgres://postgres:orib98wBpwUr15btAqoF2PksuDMTtsfJfrMsnzFUVai2Wo87MzI4SWb1g7cOeakq@micro-postgres.default.svc.cluster.local:5432/postgres?sslmode=require}"
 KAFKA_BROKERS="${KAFKA_BROKERS:-kafka.default.svc.cluster.local:9092}"
 

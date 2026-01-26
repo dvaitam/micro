@@ -1,6 +1,13 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
+
+ARG GOPROXY=direct
+ARG GOSUMDB=off
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 WORKDIR /app
-ENV GOTOOLCHAIN=auto
+
+RUN apk add --no-cache git
+ENV GOTOOLCHAIN=local
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .

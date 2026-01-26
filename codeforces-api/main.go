@@ -822,7 +822,7 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 		var reviewed int
 		err = s.db.QueryRow(`
 			SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,''), COALESCE(p.index_name,''), COALESCE(p.rating,0),
 			       e.success, e.timestamp, COALESCE(e.prompt,''), COALESCE(e.response,''), COALESCE(e.stdout,''), COALESCE(e.stderr,''), COALESCE(e.reviewied,0)
 			FROM evaluations e
 			LEFT JOIN problems p ON e.problem_id = p.id
@@ -867,7 +867,7 @@ func (s *server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 	unreviewed := strings.TrimSpace(r.URL.Query().Get("unreviewed")) == "1"
 	query := `
 		SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,''), COALESCE(p.index_name,''), COALESCE(p.rating,0),
 		       e.success, e.timestamp, COALESCE(e.reviewied,0)
 		FROM evaluations e
 		JOIN problems p ON e.problem_id = p.id
@@ -934,7 +934,7 @@ func (s *server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	if runID != "" {
 		rows, err = s.db.Query(`
 			SELECT e.id, e.run_id, COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+			       COALESCE(e.problem_id,0), COALESCE(p.contest_id,''), COALESCE(p.index_name,''), COALESCE(p.rating,0),
 			       e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
 			FROM evaluations e
 			JOIN problems p ON e.problem_id = p.id
@@ -996,7 +996,7 @@ func (s *server) handleModel(w http.ResponseWriter, r *http.Request) {
 	unreviewed := strings.TrimSpace(r.URL.Query().Get("unreviewed")) == "1"
 	rows, err := s.db.Query(`
                 SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-                       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+                       COALESCE(e.problem_id,0), COALESCE(p.contest_id,''), COALESCE(p.index_name,''), COALESCE(p.rating,0),
                        e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
                 FROM evaluations e
                 JOIN problems p ON e.problem_id = p.id
@@ -1057,7 +1057,7 @@ func (s *server) handleFailed(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT e.id, COALESCE(e.run_id,''), COALESCE(e.provider,''), COALESCE(e.model,''), COALESCE(e.lang,''),
-		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,0), COALESCE(p.index_name,''), COALESCE(p.rating,0),
+		       COALESCE(e.problem_id,0), COALESCE(p.contest_id,''), COALESCE(p.index_name,''), COALESCE(p.rating,0),
 		       e.success, e.timestamp, COALESCE(e.response,''), COALESCE(e.reviewied,0)
 		FROM evaluations e
 		JOIN problems p ON e.problem_id = p.id

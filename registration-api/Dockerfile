@@ -1,6 +1,13 @@
 FROM golang:1.24-alpine
 
+ARG GOPROXY=direct
+ARG GOSUMDB=off
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+
 WORKDIR /app
+
+RUN apk add --no-cache git
 
 RUN go mod init registration-api
 

@@ -19,7 +19,7 @@ if [ -z "${CONFIG_DIR}" ]; then
 fi
 MANIFEST="${CONFIG_DIR}/codeforces-web-deployment.yaml"
 SERVICE="${CONFIG_DIR}/codeforces-web-service.yaml"
-REMOTE_NODES=(k8s-cp-02 k8s-cp-03)
+REMOTE_NODES=(k8s-cp-03)
 API_URL="${NEXT_PUBLIC_API_URL:-http://codeforces-api.default.svc.cluster.local:8082}"
 WS_URL="${NEXT_PUBLIC_WS_URL:-ws://codeforces-api.default.svc.cluster.local:8082/ws}"
 REBUILD_TS="$(date +%s)"
