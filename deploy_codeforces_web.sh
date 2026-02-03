@@ -60,6 +60,6 @@ kubectl set env deployment codeforces-web NEXT_PUBLIC_WS_URL="${WS_URL}" --overw
 
 log "Restarting deployment to pick up the new image"
 kubectl rollout restart deployment codeforces-web
-kubectl rollout status deployment codeforces-web
+kubectl rollout status deployment codeforces-web --watch=false
 
 log "Deployment complete"

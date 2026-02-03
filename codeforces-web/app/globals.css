@@ -113,6 +113,24 @@ body {
   border-radius: 8px;
 }
 
+.statement-frame {
+  width: 100%;
+  min-height: 560px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.code-editor .cm-editor {
+  min-height: 520px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+}
+
+.code-editor .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .form {
   display: flex;
   flex-direction: column;

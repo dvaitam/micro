@@ -49,7 +49,7 @@ export default function EvaluationFixPage({ params }) {
       lang: data.lang || 'go',
     };
     localStorage.setItem('cf_prefill', JSON.stringify(payload));
-    router.push(`/contest/${data.contest_id}/problem/${data.index}`);
+    router.push(`/contest/${data.contest_id}/problem/${data.index}/submit`);
   };
 
   return (

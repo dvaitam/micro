@@ -39,6 +39,6 @@ kubectl set env deployment codeforces-worker KAFKA_BROKERS="${KAFKA_BROKERS}" --
 
 log "Restarting deployment to pick up the new image"
 kubectl rollout restart deployment codeforces-worker
-kubectl rollout status deployment codeforces-worker
+kubectl rollout status deployment codeforces-worker --watch=false
 
 log "Deployment complete"

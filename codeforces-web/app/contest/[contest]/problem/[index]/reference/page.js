@@ -65,7 +65,7 @@ export default function ReferenceSolutionPage({ params }) {
       lang: 'go',
     };
     localStorage.setItem('cf_prefill', JSON.stringify(payload));
-    router.push(`/contest/${contest}/problem/${index}`);
+    router.push(`/contest/${contest}/problem/${index}/submit`);
   };
 
   return (
