@@ -1259,8 +1259,10 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Try to parse as problem identifier like "475D", "1A", "1920F2"
-	// Pattern: one or more digits followed by one or more letters (optionally with a digit suffix like F2)
+	// Try to parse as:
+	//   "475D"  → contest_id=475, index_name=D  (specific problem)
+	//   "575"   → contest_id=575                 (all problems in contest)
+	//   "trees" → title/tag search
 	contestID, indexName := parseIdentifier(q)
 
 	baseSelect := `
@@ -1283,6 +1285,13 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			  contest_id, index_name
 			LIMIT $4 OFFSET $5
 		`, contestID, indexName, q, limit, offset)
+	} else if contestID != "" {
+		// Pure contest number — return all problems in that contest
+		rows, err = s.db.Query(baseSelect+`
+			WHERE contest_id = $1
+			ORDER BY index_name
+			LIMIT $2 OFFSET $3
+		`, contestID, limit, offset)
 	} else {
 		// Pure title/tag search
 		rows, err = s.db.Query(baseSelect+`
@@ -1311,20 +1320,24 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, probs)
 }
 
-// parseIdentifier attempts to split a string like "475D" or "1920F2" into contest + index.
-// Returns ("475", "D") or ("1920", "F2"). Returns ("","") if it doesn't match.
+// parseIdentifier attempts to split a string like "475D", "1920F2", or "575" into contest + index.
+// Returns ("475", "D"), ("1920", "F2"), or ("575", "") for a bare contest number.
+// Returns ("","") if the input doesn't start with digits.
 func parseIdentifier(s string) (contestID, indexName string) {
-	// Find where digits end and letters begin
 	i := 0
 	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
 		i++
 	}
-	if i == 0 || i == len(s) {
+	if i == 0 {
 		return "", ""
 	}
-	// The rest must start with a letter
+	// Pure number like "575" → contest only
+	if i == len(s) {
+		return s, ""
+	}
+	// The rest must start with a letter (e.g. "475D", "1920F2")
 	rest := s[i:]
-	if len(rest) == 0 || !(rest[0] >= 'A' && rest[0] <= 'Z' || rest[0] >= 'a' && rest[0] <= 'z') {
+	if !(rest[0] >= 'A' && rest[0] <= 'Z' || rest[0] >= 'a' && rest[0] <= 'z') {
 		return "", ""
 	}
 	return s[:i], rest
