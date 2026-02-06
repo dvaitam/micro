@@ -100,7 +100,7 @@ export default function LeaderboardPage() {
 
       {error && <div className="notice error">{error}</div>}
 
-      <section className="grid">
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div className="card">
           <div className="card-header">
             <h2>Top runs</h2>
