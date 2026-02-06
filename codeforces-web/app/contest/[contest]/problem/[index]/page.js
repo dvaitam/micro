@@ -295,41 +295,41 @@ export default function ProblemPage({ params }) {
   const statementUrl = `https://cdn.manchik.co.uk/contest/${contest}/problem/${index}`;
   const submitUrl = `/contest/${contest}/problem/${index}/submit`;
 
+  const ratingColor = (r) => {
+    if (!r || r <= 0) return 'none';
+    if (r < 1200) return 'gray';
+    if (r < 1400) return 'green';
+    if (r < 1600) return 'cyan';
+    if (r < 1900) return 'blue';
+    if (r < 2100) return 'violet';
+    if (r < 2400) return 'orange';
+    return 'red';
+  };
+
+  const verdictDot = (s) => {
+    const v = (s.verdict || s.status || '').toLowerCase();
+    if (v.includes('accepted') || v.includes('ok') || v === 'success') return 'accepted';
+    if (v.includes('wrong') || v.includes('error') || v.includes('fail') || v.includes('time') || v.includes('runtime') || v.includes('memory')) return 'failed';
+    if (v.includes('pending') || v.includes('running') || v.includes('queue')) return 'pending';
+    return 'unknown';
+  };
+
   return (
     <main className="page">
+      <nav className="breadcrumb">
+        <Link href="/">Home</Link>
+        <span className="breadcrumb__sep">/</span>
+        <Link href={`/contest/${contest}`}>Contest {contest}</Link>
+        <span className="breadcrumb__sep">/</span>
+        <span>Problem {index}</span>
+      </nav>
+
       <header className="header">
         <div>
           <h1>
-            {contest}
-            {index}
+            {contest} {index}
+            {problem?.title && <span className="header__title-name"> &mdash; {problem.title}</span>}
           </h1>
-          <div className="row gap-8">
-            <p>{problem?.title || 'Problem'}</p>
-            <Link
-              href={`https://codeforces.com/contest/${contest}/problem/${index}`}
-              target="_blank"
-              rel="noreferrer"
-              className="muted"
-            >
-              View on Codeforces.com ↗
-            </Link>
-            <Link href={submitUrl} className="muted">
-              Submit solution ↗
-            </Link>
-            <Link href={`/contest/${contest}/problem/${index}/reference`} className="muted">
-              Reference solution ↗
-            </Link>
-          </div>
-          {problem && (
-            <div className="muted" style={{ marginTop: 4 }}>
-              {problem.rating > 0 ? `rating ${problem.rating}` : 'rating —'}
-              {Array.isArray(problem.tags) && problem.tags.length > 0 && (
-                <>
-                  {' '}• tags: {problem.tags.join(', ')}
-                </>
-              )}
-            </div>
-          )}
         </div>
         <div className="nav-links">
           <Link href="/">Problems</Link>
@@ -344,202 +344,278 @@ export default function ProblemPage({ params }) {
         </div>
       </header>
 
-      <section className="grid">
-        <div className="card wide-card">
-          <div className="card-header">
-            <h2>Statement</h2>
-            <span className="muted">
-              {contest}
-              {index}
-            </span>
-            <a href={statementUrl} target="_blank" rel="noreferrer" className="muted">
-              Open in new tab ↗
-            </a>
+      <section className="problem-layout">
+        {/* Left column: Statement */}
+        <div className="problem-layout__main">
+          <div className="card card--primary">
+            <div className="card-header">
+              <h2>Statement</h2>
+              <a href={statementUrl} target="_blank" rel="noreferrer" className="muted">
+                Open in new tab ↗
+              </a>
+            </div>
+            <iframe
+              className="statement-frame"
+              src={statementUrl}
+              title={`Statement ${contest}${index}`}
+            />
           </div>
-          <iframe
-            className="statement-frame"
-            src={statementUrl}
-            title={`Statement ${contest}${index}`}
-          />
         </div>
 
-        {!loggedIn && (
-          <div className="card">
+        {/* Right column: Metadata + Login */}
+        <div className="problem-layout__sidebar">
+          <div className="card card--compact">
             <div className="card-header">
-              <h2>Login</h2>
-              <span className="muted">OTP via email</span>
+              <h2>Problem Info</h2>
             </div>
-            <div className="form">
-              <label>
-                Email
-                <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-              </label>
-              <div className="row">
-                <button onClick={requestOtp} disabled={!email}>
-                  Send OTP
-                </button>
+            <div className="meta-row">
+              <span className="meta-label">Rating</span>
+              <span className={`rating-badge rating-badge--${ratingColor(problem?.rating)}`}>
+                {problem?.rating > 0 ? problem.rating : '---'}
+              </span>
+            </div>
+            <div className="meta-row">
+              <span className="meta-label">Tags</span>
+              <div className="tag-pills">
+                {Array.isArray(problem?.tags) && problem.tags.length > 0
+                  ? problem.tags.map((t) => (
+                      <span key={t} className="pill">{t}</span>
+                    ))
+                  : <span className="muted">None</span>
+                }
               </div>
-              <label>
-                Code
-                <input value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="123456" />
-              </label>
-              <label className="row gap-8" style={{ justifyContent: 'flex-start', alignItems: 'center' }}>
-                <input 
-                  type="checkbox" 
-                  checked={stayLoggedIn} 
-                  onChange={(e) => setStayLoggedIn(e.target.checked)} 
-                  style={{ width: 'auto' }}
-                />
-                <span>Stay logged in</span>
-              </label>
-              <button className="primary" onClick={verifyOtp} disabled={!email || !otp}>
-                Verify & Login
-              </button>
-              {authMsg && <div className={`notice ${authMsg.type}`}>{authMsg.text}</div>}
+            </div>
+            <div className="sidebar-actions">
+              <Link href={submitUrl} className="btn btn--primary btn--block">
+                Submit solution
+              </Link>
+              <Link
+                href={`https://codeforces.com/contest/${contest}/problem/${index}`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn--outline btn--block"
+              >
+                View on Codeforces ↗
+              </Link>
+              <Link href={`/contest/${contest}/problem/${index}/reference`} className="btn btn--outline btn--block">
+                Reference solution
+              </Link>
             </div>
           </div>
-        )}
 
-        <div className="card wide-card">
-          <div className="card-header">
-            <h2>{`Evaluations for ${contest}${index}`}</h2>
-            {evalsLoading && <span className="muted">Loading…</span>}
-            <button onClick={loadEvals}>Refresh</button>
-          </div>
-          {evalsError && <div className="notice error">{evalsError}</div>}
-          {!evalsLoading && !evalsError && evals.length === 0 && (
-            <div className="muted">No evaluations recorded for this problem.</div>
-          )}
-          {evals.length > 0 && (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Run</th>
-                    <th>Model</th>
-                    <th>Lang</th>
-                    <th>Success</th>
-                    <th>Timestamp</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {evals.map((e) => (
-                    <tr key={e.id}>
-                      <td>
-                        <Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link>
-                      </td>
-                      <td>{e.run_id || '—'}</td>
-                      <td>{e.model}</td>
-                      <td>{e.lang}</td>
-                      <td>{e.success ? 'yes' : 'no'}</td>
-                      <td className="muted">{e.timestamp}</td>
-                      <td className="row gap-8">
-                        <button className="primary" onClick={() => loadEvaluationForSubmit(e.id, e.lang)}>
-                          Load &amp; retry
-                        </button>
-                        <Link href={`/evaluation/${e.id}/fix`}>Fix prompt</Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-            <div className="card-header">
-              <h2>{`My submissions for ${contest}${index}`}</h2>
-              {subsLoading && <span className="muted">Loading…</span>}
-            </div>
-          {subsError && <div className="notice error">{subsError}</div>}
-          {!subsLoading && !subsError && mySubs.length === 0 && (
-            <div className="muted">No submissions yet for this problem.</div>
-          )}
-          <ul className="list">
-            {mySubs.map((s) => (
-              <li key={s.id} className="row space-between">
-                <div>
-                  <div className="label">#{s.id}</div>
-                  <div className="muted">{s.timestamp}</div>
-                  <div>
-                    {s.status} {s.verdict && `- ${s.verdict}`} {s.exit_code !== undefined && `(exit ${s.exit_code})`}
-                  </div>
-                  <div className="muted">{s.lang}</div>
+          {!loggedIn && (
+            <div className="card card--compact">
+              <div className="card-header">
+                <h2>Login</h2>
+                <span className="muted">OTP via email</span>
+              </div>
+              <div className="form">
+                <label>
+                  Email
+                  <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+                </label>
+                <div className="row">
+                  <button onClick={requestOtp} disabled={!email}>
+                    Send OTP
+                  </button>
                 </div>
-                <button onClick={() => loadSubmissionForSubmit(s)}>Load & Retry</button>
-              </li>
-            ))}
-          </ul>
+                <label>
+                  Code
+                  <input value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="123456" />
+                </label>
+                <label className="row gap-8" style={{ justifyContent: 'flex-start', alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={stayLoggedIn}
+                    onChange={(e) => setStayLoggedIn(e.target.checked)}
+                    style={{ width: 'auto' }}
+                  />
+                  <span>Stay logged in</span>
+                </label>
+                <button className="primary" onClick={verifyOtp} disabled={!email || !otp}>
+                  Verify &amp; Login
+                </button>
+                {authMsg && <div className={`notice ${authMsg.type}`}>{authMsg.text}</div>}
+              </div>
+            </div>
+          )}
         </div>
 
-        {selectedSub && (
+        {/* Full-width: Evaluations */}
+        <div className="problem-layout__full">
           <div className="card">
             <div className="card-header">
-              <h2>{`Submission #${selectedSub.id}`}</h2>
-              {selectedLoading && <span className="muted">Loading…</span>}
+              <h2>Evaluations</h2>
+              {evalsLoading && <span className="muted">Loading...</span>}
+              <button onClick={loadEvals}>Refresh</button>
             </div>
-            {selectedError && <div className="notice error">{selectedError}</div>}
-            <div className="row gap-8">
-              <div>Status: {selectedSub.status}</div>
-              <div>Verdict: {selectedSub.verdict || '—'}</div>
-              <div>Lang: {selectedSub.lang || 'unknown'}</div>
-              <div className="muted">{selectedSub.timestamp}</div>
-            </div>
-            <div className="row gap-8">
-              <button onClick={() => loadSubmissionForSubmit(selectedSub)}>Load & Retry</button>
-              <button onClick={() => setSelectedSub(null)}>Clear</button>
-            </div>
-            <details open>
-              <summary>Code</summary>
-              <pre className="code-block">{selectedSub.code || '(empty)'}</pre>
-            </details>
-            <details>
-              <summary>Stdout</summary>
-              <pre className="code-block">{selectedSub.stdout || '(empty)'}</pre>
-            </details>
-            <details>
-              <summary>Stderr</summary>
-              <pre className="code-block">{selectedSub.stderr || '(empty)'}</pre>
-            </details>
-            <details>
-              <summary>Response</summary>
-              <pre className="code-block">{selectedSub.response || '(empty)'}</pre>
-            </details>
+            {evalsError && <div className="notice error">{evalsError}</div>}
+            {!evalsLoading && !evalsError && evals.length === 0 && (
+              <div className="muted">No evaluations recorded for this problem.</div>
+            )}
+            {evals.length > 0 && (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th className="hide-mobile">Run</th>
+                      <th>Model</th>
+                      <th>Lang</th>
+                      <th>Success</th>
+                      <th className="hide-mobile">Timestamp</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evals.map((e) => (
+                      <tr key={e.id}>
+                        <td>
+                          <Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link>
+                        </td>
+                        <td className="hide-mobile">{e.run_id || '—'}</td>
+                        <td>{e.model}</td>
+                        <td>{e.lang}</td>
+                        <td>
+                          <span
+                            className={`status-dot ${e.success ? 'status-dot--accepted' : 'status-dot--failed'}`}
+                            style={{ verticalAlign: 'middle', marginRight: 6 }}
+                          />
+                          {e.success ? 'Passed' : 'Failed'}
+                        </td>
+                        <td className="hide-mobile muted">{e.timestamp}</td>
+                        <td className="row gap-8">
+                          <button className="primary" onClick={() => loadEvaluationForSubmit(e.id, e.lang)}>
+                            Load &amp; retry
+                          </button>
+                          <Link href={`/evaluation/${e.id}/fix`}>Fix prompt</Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
-        <div className="card">
-          <div className="card-header">
-            <h2>{`All submissions for ${contest}${index}`}</h2>
-            {allSubsLoading && <span className="muted">Loading…</span>}
-          </div>
-          {allSubsError && <div className="notice error">{allSubsError}</div>}
-          {!allSubsLoading && !allSubsError && allSubs.length === 0 && (
-            <div className="muted">No submissions yet for this problem.</div>
-          )}
-          <ul className="list">
-            {allSubs.map((s) => (
-              <li key={s.id} className="row space-between">
-                <div>
-                  <button className="link" onClick={() => fetchSubmissionDetail(s.id)} style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}>
-                    <div className="label">#{s.id}</div>
-                  </button>
-                  <div className="muted">{s.timestamp}</div>
-                  <div>
-                    {s.status} {s.verdict && `- ${s.verdict}`} {s.exit_code !== undefined && `(exit ${s.exit_code})`}
+        {/* Full-width: My Submissions */}
+        <div className="problem-layout__full">
+          <div className="card">
+            <div className="card-header">
+              <h2>My Submissions</h2>
+              {subsLoading && <span className="muted">Loading...</span>}
+            </div>
+            {subsError && <div className="notice error">{subsError}</div>}
+            {!subsLoading && !subsError && mySubs.length === 0 && (
+              <div className="muted">No submissions yet for this problem.</div>
+            )}
+            <ul className="list">
+              {mySubs.map((s) => (
+                <li key={s.id} className="submission-item">
+                  <div className="submission-item__info">
+                    <span className={`status-dot status-dot--${verdictDot(s)}`} title={s.verdict || s.status} />
+                    <div>
+                      <div>
+                        <span className="label">#{s.id}</span>
+                        <span className="muted" style={{ marginLeft: 8 }}>{s.lang}</span>
+                      </div>
+                      <div style={{ marginTop: 2 }}>
+                        <span>{s.status}</span>
+                        {s.verdict && <span className="muted"> &mdash; {s.verdict}</span>}
+                        {s.exit_code !== undefined && <span className="muted"> (exit {s.exit_code})</span>}
+                      </div>
+                      <div className="muted" style={{ fontSize: 12 }}>{s.timestamp}</div>
+                    </div>
                   </div>
-                  <div className="muted">{s.lang}</div>
+                  <div className="submission-item__actions">
+                    <button onClick={() => loadSubmissionForSubmit(s)}>Load &amp; Retry</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        {/* Full-width: All Submissions (with inline selected detail) */}
+        <div className="problem-layout__full">
+          <div className="card">
+            <div className="card-header">
+              <h2>All Submissions</h2>
+              {allSubsLoading && <span className="muted">Loading...</span>}
+            </div>
+
+            {selectedSub && (
+              <div className="selected-detail">
+                <div className="selected-detail__header">
+                  <h3>Submission #{selectedSub.id}</h3>
+                  <button className="btn--close" onClick={() => setSelectedSub(null)} title="Close">&times;</button>
                 </div>
-                <div className="row gap-8">
-                  <button onClick={() => fetchSubmissionDetail(s.id)}>View</button>
-                  <Link href={`/submission/${s.id}/fix`}>Fix prompt</Link>
+                {selectedLoading && <span className="muted">Loading...</span>}
+                {selectedError && <div className="notice error">{selectedError}</div>}
+                <div className="selected-detail__meta">
+                  <span className={`status-dot status-dot--${verdictDot(selectedSub)}`} />
+                  <span>Status: {selectedSub.status}</span>
+                  <span className="muted">|</span>
+                  <span>Verdict: {selectedSub.verdict || '—'}</span>
+                  <span className="muted">|</span>
+                  <span>Lang: {selectedSub.lang || 'unknown'}</span>
+                  <span className="muted">{selectedSub.timestamp}</span>
                 </div>
-              </li>
-            ))}
-          </ul>
+                <div className="row gap-8" style={{ marginTop: 8 }}>
+                  <button onClick={() => loadSubmissionForSubmit(selectedSub)}>Load &amp; Retry</button>
+                </div>
+                <details open>
+                  <summary>Code</summary>
+                  <pre className="code-block">{selectedSub.code || '(empty)'}</pre>
+                </details>
+                <details>
+                  <summary>Stdout</summary>
+                  <pre className="code-block">{selectedSub.stdout || '(empty)'}</pre>
+                </details>
+                <details>
+                  <summary>Stderr</summary>
+                  <pre className="code-block">{selectedSub.stderr || '(empty)'}</pre>
+                </details>
+                <details>
+                  <summary>Response</summary>
+                  <pre className="code-block">{selectedSub.response || '(empty)'}</pre>
+                </details>
+              </div>
+            )}
+
+            {allSubsError && <div className="notice error">{allSubsError}</div>}
+            {!allSubsLoading && !allSubsError && allSubs.length === 0 && (
+              <div className="muted">No submissions yet for this problem.</div>
+            )}
+            <ul className="list">
+              {allSubs.map((s) => (
+                <li key={s.id} className={`submission-item${selectedSub?.id === s.id ? ' submission-item--active' : ''}`}>
+                  <div className="submission-item__info">
+                    <span className={`status-dot status-dot--${verdictDot(s)}`} title={s.verdict || s.status} />
+                    <div>
+                      <div>
+                        <button className="link" onClick={() => fetchSubmissionDetail(s.id)} style={{ padding: 0, border: 'none', background: 'none', boxShadow: 'none', cursor: 'pointer' }}>
+                          <span className="label">#{s.id}</span>
+                        </button>
+                        <span className="muted" style={{ marginLeft: 8 }}>{s.lang}</span>
+                      </div>
+                      <div style={{ marginTop: 2 }}>
+                        <span>{s.status}</span>
+                        {s.verdict && <span className="muted"> &mdash; {s.verdict}</span>}
+                        {s.exit_code !== undefined && <span className="muted"> (exit {s.exit_code})</span>}
+                      </div>
+                      <div className="muted" style={{ fontSize: 12 }}>{s.timestamp}</div>
+                    </div>
+                  </div>
+                  <div className="submission-item__actions">
+                    <button onClick={() => fetchSubmissionDetail(s.id)}>View</button>
+                    <Link href={`/submission/${s.id}/fix`}>Fix prompt</Link>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
     </main>
