@@ -70,7 +70,9 @@ final class SSHAPIClient {
     static let shared = SSHAPIClient()
 
     private let defaults = UserDefaults.standard
-    private let baseKey = "ssh.api.base"
+    private let legacyBaseKey = "ssh.api.base"
+    private let authBaseKey = "ssh.api.authBase"
+    private let sshBaseKey = "ssh.api.sshBase"
     private let sessionKey = "ssh.api.session"
     private let decoder: JSONDecoder = {
         let dec = JSONDecoder()
@@ -79,21 +81,38 @@ final class SSHAPIClient {
     }()
     private let session: URLSession = .shared
 
-    private(set) var baseURL: String
+    private(set) var authBaseURL: String
+    private(set) var sshBaseURL: String
     private(set) var sessionToken: String?
     private(set) var accessToken: String?
     private(set) var email: String?
 
     private init() {
-        baseURL = Self.normalizeBase(defaults.string(forKey: baseKey) ?? "https://ssh.manchik.co.uk")
+        let legacyBase = defaults.string(forKey: legacyBaseKey)
+        let storedAuth = defaults.string(forKey: authBaseKey) ?? legacyBase
+        let storedSSH = defaults.string(forKey: sshBaseKey) ?? legacyBase
+        authBaseURL = Self.normalizeBase(storedAuth ?? "https://ssh.manchik.co.uk")
+        sshBaseURL = Self.normalizeBase(storedSSH ?? authBaseURL)
+        defaults.set(authBaseURL, forKey: authBaseKey)
+        defaults.set(sshBaseURL, forKey: sshBaseKey)
+        defaults.set(sshBaseURL, forKey: legacyBaseKey)
         sessionToken = defaults.string(forKey: sessionKey)
     }
 
+    var baseURL: String { sshBaseURL }
+
     func updateBaseURL(_ newValue: String) {
-        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = Self.normalizeBase(trimmed.isEmpty ? baseURL : trimmed)
-        baseURL = normalized
-        defaults.set(baseURL, forKey: baseKey)
+        updateBaseURLs(auth: newValue, ssh: newValue)
+    }
+
+    func updateBaseURLs(auth: String?, ssh: String?) {
+        let normalizedAuth = Self.normalizeBase(Self.nonEmpty(auth) ?? authBaseURL)
+        let normalizedSSH = Self.normalizeBase(Self.nonEmpty(ssh) ?? sshBaseURL)
+        authBaseURL = normalizedAuth
+        sshBaseURL = normalizedSSH
+        defaults.set(normalizedAuth, forKey: authBaseKey)
+        defaults.set(normalizedSSH, forKey: sshBaseKey)
+        defaults.set(normalizedSSH, forKey: legacyBaseKey)
     }
 
     func clearSession() {
@@ -105,12 +124,12 @@ final class SSHAPIClient {
 
     func requestOTP(email: String) async throws {
         let payload = ["email": email]
-        _ = try await send(path: "/api/request-otp", method: "POST", body: payload)
+        _ = try await send(path: "/api/request-otp", method: "POST", base: authBaseURL, body: payload)
     }
 
     func verifyOTP(email: String, otp: String) async throws -> SSHAuthTokens {
         let payload = ["email": email, "otp": otp]
-        let data = try await send(path: "/api/verify-otp", method: "POST", body: payload)
+        let data = try await send(path: "/api/verify-otp", method: "POST", base: authBaseURL, body: payload)
         let resp = try decoder.decode(VerifyResponse.self, from: data)
         guard let access = resp.accessToken else { throw SSHAPIError.message("No access token returned") }
         let tokens = SSHAuthTokens(email: resp.email, sessionToken: resp.sessionToken, accessToken: access)
@@ -121,7 +140,7 @@ final class SSHAPIClient {
     func refreshSession(using token: String? = nil) async throws -> SSHAuthTokens {
         let bearer = token ?? sessionToken
         guard let bearer else { throw SSHAPIError.unauthorized }
-        let data = try await send(path: "/api/session", method: "GET", headers: ["Authorization": "Bearer \(bearer)"])
+        let data = try await send(path: "/api/session", method: "GET", headers: ["Authorization": "Bearer \(bearer)"], base: authBaseURL)
         let resp = try decoder.decode(SessionResponse.self, from: data)
         guard let access = resp.accessToken else { throw SSHAPIError.message("Unable to refresh access token") }
         let tokens = SSHAuthTokens(email: resp.email, sessionToken: resp.token ?? bearer, accessToken: access)
@@ -145,6 +164,12 @@ final class SSHAPIClient {
         return resp.live
     }
 
+    func fetchCommandHistory() async throws -> [String] {
+        let data = try await authorizedRequest(path: "/api/ssh/commands")
+        let resp = try decoder.decode(CommandHistoryResponse.self, from: data)
+        return resp.commands
+    }
+
     func disconnectLive(id: Int) async throws {
         _ = try await authorizedRequest(path: "/api/ssh/live/\(id)", method: "DELETE")
     }
@@ -157,7 +182,7 @@ final class SSHAPIClient {
 
     func liveWebSocketURL() throws -> URL {
         guard let token = accessToken else { throw SSHAPIError.unauthorized }
-        return try websocketURL(path: "/api/ssh/live/ws", query: ["access_token": token])
+        return try websocketURL(path: "/api/ssh/live/ws", query: ["access_token": token], base: sshBaseURL)
     }
 
     func commandWebSocketURL(id: Int, command: String, keepalive: Int, timeout: Int = 60) throws -> URL {
@@ -170,7 +195,21 @@ final class SSHAPIClient {
                 "keepalive_seconds": "\(keepalive)",
                 "timeout_seconds": "\(timeout)",
                 "access_token": token
-            ]
+            ],
+            base: sshBaseURL
+        )
+    }
+
+    func controlWebSocketURL(id: Int, keepalive: Int) throws -> URL {
+        guard let token = accessToken else { throw SSHAPIError.unauthorized }
+        return try websocketURL(
+            path: "/api/ssh/control/ws",
+            query: [
+                "id": "\(id)",
+                "keepalive_seconds": "\(keepalive)",
+                "access_token": token
+            ],
+            base: sshBaseURL
         )
     }
 
@@ -193,12 +232,12 @@ final class SSHAPIClient {
         return try await send(path: path, method: method, headers: headers, body: body)
     }
 
-    private func send(path: String, method: String, headers: [String: String]? = nil) async throws -> Data {
-        try await send(path: path, method: method, headers: headers, body: nil as Encodable?)
+    private func send(path: String, method: String, headers: [String: String]? = nil, base: String? = nil) async throws -> Data {
+        try await send(path: path, method: method, headers: headers, base: base, body: nil as Encodable?)
     }
 
-    private func send(path: String, method: String, headers: [String: String]? = nil, body: Encodable?) async throws -> Data {
-        let url = try buildURL(for: path)
+    private func send(path: String, method: String, headers: [String: String]? = nil, base: String? = nil, body: Encodable?) async throws -> Data {
+        let url = try buildURL(for: path, base: base ?? sshBaseURL)
         var request = URLRequest(url: url)
         request.httpMethod = method
         var combinedHeaders = headers ?? [:]
@@ -222,8 +261,8 @@ final class SSHAPIClient {
         return data
     }
 
-    private func buildURL(for path: String) throws -> URL {
-        var trimmedBase = Self.normalizeBase(baseURL)
+    private func buildURL(for path: String, base: String) throws -> URL {
+        var trimmedBase = Self.normalizeBase(base)
         while trimmedBase.hasSuffix("/") { trimmedBase.removeLast() }
         guard var base = URL(string: trimmedBase) else { throw SSHAPIError.invalidBaseURL }
         var trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -231,8 +270,8 @@ final class SSHAPIClient {
         return base.appendingPathComponent(trimmedPath)
     }
 
-    private func websocketURL(path: String, query: [String: String]) throws -> URL {
-        let httpURL = try buildURL(for: path)
+    private func websocketURL(path: String, query: [String: String], base: String) throws -> URL {
+        let httpURL = try buildURL(for: path, base: base)
         var components = URLComponents(url: httpURL, resolvingAgainstBaseURL: false)
         components?.scheme = (httpURL.scheme == "https") ? "wss" : "ws"
         components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -254,6 +293,11 @@ final class SSHAPIClient {
             value = "https://" + value.dropFirst("wss://".count)
         }
         return value
+    }
+
+    private static func nonEmpty(_ string: String?) -> String? {
+        guard let str = string?.trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty else { return nil }
+        return str
     }
 }
 
@@ -316,6 +360,10 @@ struct RunCommandResponse: Decodable {
         case exitStatus = "exit_status"
         case reused
     }
+}
+
+private struct CommandHistoryResponse: Decodable {
+    let commands: [String]
 }
 
 // Wrapper to encode an arbitrary Encodable value while erasing its static type.

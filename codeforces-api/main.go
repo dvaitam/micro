@@ -198,6 +198,7 @@ func main() {
 	mux.HandleFunc("/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("/model", s.handleModel)
 	mux.HandleFunc("/me/submissions", s.handleUserSubmissions)
+	mux.HandleFunc("/search", s.handleSearch)
 	mux.HandleFunc("/tags", s.handleTags)
 	mux.HandleFunc("/auth/request-otp", s.handleRequestOTP)
 	mux.HandleFunc("/auth/verify-otp", s.handleVerifyOTP)
@@ -1231,6 +1232,103 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 type strSliceScanner struct{ dst *[]string }
 
 // helper removed; using pq.Array for scanning and params
+
+// handleSearch searches problems by identifier (e.g. "475D") or by title substring.
+// GET /search?q=475D  → matches contest_id=475, index_name=D
+// GET /search?q=watermelon → matches title ILIKE '%watermelon%'
+func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		http.Error(w, "q parameter is required", http.StatusBadRequest)
+		return
+	}
+	limit := 20
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	// Try to parse as problem identifier like "475D", "1A", "1920F2"
+	// Pattern: one or more digits followed by one or more letters (optionally with a digit suffix like F2)
+	contestID, indexName := parseIdentifier(q)
+
+	baseSelect := `
+		SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
+		       COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
+		       COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
+		FROM problems
+	`
+
+	var rows *sql.Rows
+	var err error
+
+	if contestID != "" && indexName != "" {
+		// Search by exact contest + index first, then fall back to title search
+		rows, err = s.db.Query(baseSelect+`
+			WHERE (contest_id = $1 AND UPPER(index_name) = UPPER($2))
+			   OR LOWER(title) LIKE '%' || LOWER($3) || '%'
+			ORDER BY
+			  CASE WHEN contest_id = $1 AND UPPER(index_name) = UPPER($2) THEN 0 ELSE 1 END,
+			  contest_id, index_name
+			LIMIT $4 OFFSET $5
+		`, contestID, indexName, q, limit, offset)
+	} else {
+		// Pure title/tag search
+		rows, err = s.db.Query(baseSelect+`
+			WHERE LOWER(title) LIKE '%' || LOWER($1) || '%'
+			   OR EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE LOWER(t) LIKE '%' || LOWER($1) || '%')
+			ORDER BY contest_id, index_name
+			LIMIT $2 OFFSET $3
+		`, q, limit, offset)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var probs []problem
+	for rows.Next() {
+		var p problem
+		if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier, &p.Rating, pq.Array(&p.Tags)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		probs = append(probs, p)
+	}
+	writeJSON(w, http.StatusOK, probs)
+}
+
+// parseIdentifier attempts to split a string like "475D" or "1920F2" into contest + index.
+// Returns ("475", "D") or ("1920", "F2"). Returns ("","") if it doesn't match.
+func parseIdentifier(s string) (contestID, indexName string) {
+	// Find where digits end and letters begin
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 || i == len(s) {
+		return "", ""
+	}
+	// The rest must start with a letter
+	rest := s[i:]
+	if len(rest) == 0 || !(rest[0] >= 'A' && rest[0] <= 'Z' || rest[0] >= 'a' && rest[0] <= 'z') {
+		return "", ""
+	}
+	return s[:i], rest
+}
 
 // handleTags returns distinct tags from problems.
 func (s *server) handleTags(w http.ResponseWriter, r *http.Request) {

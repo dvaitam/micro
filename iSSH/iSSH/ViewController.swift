@@ -10,6 +10,12 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     private var liveTask: URLSessionWebSocketTask?
     private var commandTask: URLSessionWebSocketTask?
+    private var controlTask: URLSessionWebSocketTask?
+    private var controlConnectionID: Int?
+    private var controlKeepaliveSeconds: Int?
+    private var commandHistory: [String] = []
+
+    private let commandHistoryKey = "ssh.commandHistory"
 
     // MARK: - UI
 
@@ -27,8 +33,9 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         return stack
     }()
 
-    private lazy var baseURLField = ViewController.makeTextField(placeholder: "https://ssh.manchik.co.uk")
-    private lazy var saveBaseButton = makeActionButton(title: "Save Base URL", color: .systemBlue, action: #selector(saveBaseURLTapped))
+    private lazy var authBaseURLField = ViewController.makeTextField(placeholder: "Auth base URL (https://…)")
+    private lazy var sshBaseURLField = ViewController.makeTextField(placeholder: "SSH base URL (https://…)")
+    private lazy var saveBaseButton = makeActionButton(title: "Save Base URLs", color: .systemBlue, action: #selector(saveBaseURLsTapped))
 
     private lazy var currentUserLabel: UILabel = {
         let label = UILabel()
@@ -136,9 +143,10 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         return field
     }()
     private lazy var runButton = makeActionButton(title: "Run", color: .systemGreen, action: #selector(runCommandTapped))
+    private lazy var commandHistoryButton = makeActionButton(title: "History", color: .systemGray, action: #selector(showCommandHistoryTapped))
     private lazy var trackpadLabel: UILabel = {
         let label = UILabel()
-        label.text = "Trackpad (sends echo \"M, dx,dy\" > /dev/ttyAMA0)"
+        label.text = "Trackpad (sends control events over WebSocket)"
         label.font = .systemFont(ofSize: 14)
         label.textColor = .secondaryLabel
         label.numberOfLines = 0
@@ -199,8 +207,6 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     private var lastPanTranslation: CGPoint?
     private var lastTrackpadSend = Date.distantPast
     private let trackpadThrottle: TimeInterval = 0.08
-    private var trackpadInFlight = false
-    private var pendingTrackpadDelta: (dx: Int, dy: Int)?
     private var liveRetryWorkItem: DispatchWorkItem?
     private var livePollTimer: Timer?
     private var isRunningCommand = false {
@@ -216,6 +222,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     deinit {
         liveTask?.cancel()
         commandTask?.cancel()
+        controlTask?.cancel()
     }
 
     // MARK: - Setup
@@ -243,9 +250,14 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         titleLabel.text = "SSH Manager"
         titleLabel.font = .systemFont(ofSize: 26, weight: .bold)
 
-        let baseRow = UIStackView(arrangedSubviews: [baseURLField, saveBaseButton])
+        let baseFields = UIStackView(arrangedSubviews: [authBaseURLField, sshBaseURLField])
+        baseFields.axis = .vertical
+        baseFields.spacing = 8
+
+        let baseRow = UIStackView(arrangedSubviews: [baseFields, saveBaseButton])
         baseRow.axis = .horizontal
         baseRow.spacing = 10
+        baseRow.alignment = .top
         baseRow.distribution = .fill
         saveBaseButton.widthAnchor.constraint(equalToConstant: 130).isActive = true
 
@@ -307,8 +319,13 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         runRow.alignment = .center
         runRow.distribution = .fillProportionally
         runButton.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        let commandRow = UIStackView(arrangedSubviews: [commandField, commandHistoryButton])
+        commandRow.axis = .horizontal
+        commandRow.spacing = 8
+        commandRow.alignment = .center
+        commandHistoryButton.widthAnchor.constraint(equalToConstant: 90).isActive = true
         runSection.addArrangedSubview(runRow)
-        runSection.addArrangedSubview(commandField)
+        runSection.addArrangedSubview(commandRow)
         runSection.addArrangedSubview(logView)
         runSection.addArrangedSubview(trackpadLabel)
         runSection.addArrangedSubview(trackpadView)
@@ -331,8 +348,10 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func bootstrapSession() {
-        baseURLField.text = api.baseURL
+        authBaseURLField.text = api.authBaseURL
+        sshBaseURLField.text = api.sshBaseURL
         emailField.text = api.email
+        loadLocalCommandHistory()
         updateVisibility()
         if api.sessionToken != nil {
             Task { await refreshSessionAndLoad() }
@@ -341,14 +360,15 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     // MARK: - Actions
 
-    @objc private func saveBaseURLTapped() {
+    @objc private func saveBaseURLsTapped() {
         view.endEditing(true)
-        api.updateBaseURL(baseURLField.text ?? "")
-        showMessage("Updated base URL")
+        syncBaseURLsFromFields()
+        showMessage("Updated base URLs")
     }
 
     @objc private func requestOtpTapped() {
         view.endEditing(true)
+        syncBaseURLsFromFields()
         let email = emailField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !email.isEmpty else { showMessage("Email is required"); return }
         Task {
@@ -363,6 +383,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     @objc private func verifyOtpTapped() {
         view.endEditing(true)
+        syncBaseURLsFromFields()
         let email = emailField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let otp = otpField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !email.isEmpty, !otp.isEmpty else { showMessage("Email and OTP are required"); return }
@@ -384,6 +405,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         api.clearSession()
         liveTask?.cancel()
         commandTask?.cancel()
+        resetControlWebSocket()
         liveTask = nil
         liveRetryWorkItem?.cancel()
         livePollTimer?.invalidate()
@@ -395,6 +417,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         updateTableHeight()
         updateLiveList()
         logView.text = ""
+        trackpadStatusLabel.text = "Idle"
         isRunningCommand = false
         updateVisibility()
         showMessage("Signed out")
@@ -402,6 +425,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     @objc private func createConnectionTapped() {
         view.endEditing(true)
+        syncBaseURLsFromFields()
         guard isAuthenticated else { showMessage("Login first"); return }
         let host = hostField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let username = usernameField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -430,15 +454,18 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     }
 
     @objc private func refreshConnectionsTapped() {
+        syncBaseURLsFromFields()
         Task { await loadConnections() }
     }
 
     @objc private func refreshLiveTapped() {
+        syncBaseURLsFromFields()
         Task { await loadLiveSessions() }
     }
 
     @objc private func runCommandTapped() {
         view.endEditing(true)
+        syncBaseURLsFromFields()
         guard isAuthenticated else { showMessage("Login first"); return }
         let cmd = commandField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !cmd.isEmpty else { showMessage("Command is required"); return }
@@ -448,12 +475,31 @@ final class ViewController: UIViewController, UITextFieldDelegate {
             return
         }
         let keepalive = Int(keepaliveField.text ?? "") ?? 300
+        addCommandToHistory(cmd)
         startCommandStream(id: id, command: cmd, keepalive: keepalive)
+    }
+
+    @objc private func showCommandHistoryTapped() {
+        view.endEditing(true)
+        guard !commandHistory.isEmpty else { showMessage("No command history yet"); return }
+        let sheet = UIAlertController(title: "Command History", message: nil, preferredStyle: .actionSheet)
+        for cmd in commandHistory.prefix(15) {
+            sheet.addAction(UIAlertAction(title: cmd, style: .default) { [weak self] _ in
+                self?.commandField.text = cmd
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = commandHistoryButton
+            popover.sourceRect = commandHistoryButton.bounds
+        }
+        present(sheet, animated: true)
     }
 
     // MARK: - Data loading
 
     private func refreshSessionAndLoad() async {
+        await MainActor.run { self.syncBaseURLsFromFields() }
         do {
             let tokens = try await api.refreshSession()
             await MainActor.run {
@@ -472,6 +518,7 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     private func loadDataAfterLogin() async {
         await loadConnections()
         await loadLiveSessions()
+        await loadCommandHistory()
         await MainActor.run {
             self.startLiveWebSocket()
             self.startLivePolling()
@@ -488,6 +535,9 @@ final class ViewController: UIViewController, UITextFieldDelegate {
                     self.selectedConnectionID = list.first?.id
                 }
                 self.syncSelectedConnectionField()
+                if let current = self.selectedConnectionID {
+                    _ = self.ensureControlWebSocket(for: current)
+                }
                 self.tableView.reloadData()
                 self.updateTableHeight()
             }
@@ -505,6 +555,18 @@ final class ViewController: UIViewController, UITextFieldDelegate {
             }
         } catch {
             await MainActor.run { self.showMessage(error.localizedDescription) }
+        }
+    }
+
+    private func loadCommandHistory() async {
+        do {
+            let commands = try await api.fetchCommandHistory()
+            await MainActor.run {
+                self.commandHistory = Array(commands.prefix(50))
+                self.saveLocalCommandHistory()
+            }
+        } catch {
+            print("Command history load failed: \(error.localizedDescription)")
         }
     }
 
@@ -608,6 +670,52 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         }
     }
 
+    private func ensureControlWebSocket(for id: Int) -> URLSessionWebSocketTask? {
+        guard isAuthenticated else { return nil }
+        let keepalive = keepaliveSeconds()
+        if let task = controlTask, controlConnectionID == id, controlKeepaliveSeconds == keepalive, task.state == .running {
+            return task
+        }
+        controlTask?.cancel(with: .goingAway, reason: nil)
+        guard let url = try? api.controlWebSocketURL(id: id, keepalive: keepalive) else {
+            showMessage("Unable to open control stream")
+            return nil
+        }
+        let task = webSocketSession.webSocketTask(with: url)
+        controlTask = task
+        controlConnectionID = id
+        controlKeepaliveSeconds = keepalive
+        task.resume()
+        listenForControlEvents(task)
+        DispatchQueue.main.async { self.trackpadStatusLabel.text = "Control ready for #\(id)" }
+        return task
+    }
+
+    private func listenForControlEvents(_ task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                if task.state == .running { self.listenForControlEvents(task) }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    guard task == self.controlTask else { return }
+                    self.trackpadStatusLabel.text = "Control error: \(error.localizedDescription)"
+                    self.controlTask = nil
+                    self.controlConnectionID = nil
+                    self.controlKeepaliveSeconds = nil
+                }
+            }
+        }
+    }
+
+    private func resetControlWebSocket() {
+        controlTask?.cancel(with: .goingAway, reason: nil)
+        controlTask = nil
+        controlConnectionID = nil
+        controlKeepaliveSeconds = nil
+    }
+
     // MARK: - UI updates
 
     private func applyAuth(email: String) {
@@ -632,6 +740,12 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     private func showMessage(_ text: String) {
         messageLabel.text = text
+    }
+
+    private func syncBaseURLsFromFields() {
+        api.updateBaseURLs(auth: authBaseURLField.text, ssh: sshBaseURLField.text)
+        authBaseURLField.text = api.authBaseURL
+        sshBaseURLField.text = api.sshBaseURL
     }
 
     private func clearNewConnectionForm() {
@@ -670,6 +784,28 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         }
     }
 
+    private func addCommandToHistory(_ command: String) {
+        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        commandHistory.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+        commandHistory.insert(normalized, at: 0)
+        if commandHistory.count > 50 {
+            commandHistory = Array(commandHistory.prefix(50))
+        }
+        saveLocalCommandHistory()
+    }
+
+    private func loadLocalCommandHistory() {
+        guard let data = UserDefaults.standard.data(forKey: commandHistoryKey),
+              let commands = try? JSONDecoder().decode([String].self, from: data) else { return }
+        commandHistory = commands
+    }
+
+    private func saveLocalCommandHistory() {
+        guard let data = try? JSONEncoder().encode(commandHistory) else { return }
+        UserDefaults.standard.set(data, forKey: commandHistoryKey)
+    }
+
     private func trackpadConnectionID() -> Int? {
         let idText = runConnectionField.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let text = idText, !text.isEmpty, let id = Int(text) {
@@ -686,35 +822,17 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func sendTrackpadMove(dx: Int, dy: Int) async {
-        guard dx != 0 || dy != 0 else { return }
         guard let connID = trackpadConnectionID() else {
             await MainActor.run { self.showMessage("Select a connection before using the trackpad") }
             return
         }
-        let cmd = "echo \"M, \(dx),\(dy)\" > /dev/ttyAMA0"
-        if trackpadInFlight {
-            pendingTrackpadDelta = (dx, dy)
-            return
-        }
-        trackpadInFlight = true
-        pendingTrackpadDelta = nil
-        await MainActor.run { self.trackpadStatusLabel.text = "Sending (\(dx), \(dy))…" }
-        do {
-            _ = try await api.runCommand(connectionID: connID, command: cmd, timeoutSeconds: 3, keepaliveSeconds: keepaliveSeconds())
-            await MainActor.run {
-                self.trackpadStatusLabel.text = "Sent (\(dx), \(dy)) at \(Date().formatted(date: .omitted, time: .standard))"
-            }
-        } catch {
-            await MainActor.run {
-                self.trackpadStatusLabel.text = "Failed: \(error.localizedDescription)"
-                self.showMessage("Trackpad send failed: \(error.localizedDescription)")
-            }
-        }
-        trackpadInFlight = false
-        if let next = pendingTrackpadDelta {
-            pendingTrackpadDelta = nil
-            Task { await self.sendTrackpadMove(dx: next.dx, dy: next.dy) }
-        }
+        let timestamp = Date().formatted(date: .omitted, time: .standard)
+        await sendControlPayload(
+            ControlPayload(type: "move", dx: dx, dy: dy, button: nil),
+            connectionID: connID,
+            preparingText: "Sending (\(dx), \(dy))…",
+            successText: "Sent (\(dx), \(dy)) at \(timestamp)"
+        )
     }
 
     private func sendClick(type: ClickType) async {
@@ -722,16 +840,33 @@ final class ViewController: UIViewController, UITextFieldDelegate {
             await MainActor.run { self.showMessage("Select a connection before clicking") }
             return
         }
-        let cmd = "echo \"C, \(type.rawValue)\" > /dev/ttyAMA0"
-        await MainActor.run { self.trackpadStatusLabel.text = "Sending click \(type.rawValue)…" }
+        await sendControlPayload(
+            ControlPayload(type: "click", dx: nil, dy: nil, button: type.rawValue),
+            connectionID: connID,
+            preparingText: "Sending click \(type.rawValue)…",
+            successText: "Click \(type.rawValue) sent"
+        )
+    }
+
+    private func sendControlPayload(_ payload: ControlPayload, connectionID: Int, preparingText: String, successText: String) async {
+        guard let task = ensureControlWebSocket(for: connectionID) else {
+            await MainActor.run { self.trackpadStatusLabel.text = "Control not ready" }
+            return
+        }
+        guard let data = try? JSONEncoder().encode(payload), let text = String(data: data, encoding: .utf8) else {
+            await MainActor.run { self.trackpadStatusLabel.text = "Unable to encode control payload" }
+            return
+        }
+        await MainActor.run { self.trackpadStatusLabel.text = preparingText }
         do {
-            _ = try await api.runCommand(connectionID: connID, command: cmd, timeoutSeconds: 3, keepaliveSeconds: keepaliveSeconds())
-            await MainActor.run { self.trackpadStatusLabel.text = "Click \(type.rawValue) sent" }
+            try await task.send(.string(text))
+            await MainActor.run { self.trackpadStatusLabel.text = successText }
         } catch {
             await MainActor.run {
-                self.trackpadStatusLabel.text = "Click failed: \(error.localizedDescription)"
-                self.showMessage("Trackpad send failed: \(error.localizedDescription)")
+                self.trackpadStatusLabel.text = "Control send failed: \(error.localizedDescription)"
+                self.showMessage("Control stream error: \(error.localizedDescription)")
             }
+            resetControlWebSocket()
         }
     }
 
@@ -853,7 +988,8 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 extension ViewController {
     func assignDelegates() {
         [
-            baseURLField,
+            authBaseURLField,
+            sshBaseURLField,
             emailField,
             otpField,
             nameField,
@@ -883,6 +1019,13 @@ extension ViewController {
 private enum ClickType: Int {
     case single = 1
     case double = 2
+}
+
+private struct ControlPayload: Encodable {
+    let type: String
+    let dx: Int?
+    let dy: Int?
+    let button: Int?
 }
 
 // MARK: - Trackpad gestures
@@ -948,6 +1091,7 @@ extension ViewController: UITableViewDataSource, UITableViewDelegate {
         let conn = connections[indexPath.row]
         selectedConnectionID = conn.id
         syncSelectedConnectionField()
+        _ = ensureControlWebSocket(for: conn.id)
         tableView.reloadData()
     }
 }
