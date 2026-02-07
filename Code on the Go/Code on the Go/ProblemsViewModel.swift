@@ -11,8 +11,12 @@ final class ProblemsViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var page = 0
     @Published var searchQuery = ""
+    @Published var sort: SortOption = .default
+    @Published var totalCount = 0
+    @Published var goToPageText = ""
 
     var isSearching: Bool { !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty }
+    var totalPages: Int { max(1, Int(ceil(Double(totalCount) / Double(pageSize)))) }
 
     private let pageSize = 15
     private var client: CodeforcesAPIClient?
@@ -39,11 +43,13 @@ final class ProblemsViewModel: ObservableObject {
         errorMessage = nil
         let offset = page * pageSize
         do {
-            let list = try await client.fetchProblems(limit: pageSize, offset: offset, tags: Array(selectedTags), tagsMode: tagsMode.rawValue)
-            problems = list
+            let result = try await client.fetchProblems(limit: pageSize, offset: offset, tags: Array(selectedTags), tagsMode: tagsMode.rawValue, sort: sort.rawValue)
+            problems = result.problems
+            totalCount = result.total
         } catch {
             errorMessage = error.localizedDescription
             problems = []
+            totalCount = 0
         }
         isLoading = false
     }
@@ -102,6 +108,25 @@ final class ProblemsViewModel: ObservableObject {
             await searchProblems()
         } else {
             await loadProblems()
+        }
+    }
+
+    func goToPage() async {
+        guard let p = Int(goToPageText), p >= 1, p <= totalPages else { return }
+        page = p - 1
+        goToPageText = ""
+        if isSearching {
+            await searchProblems()
+        } else {
+            await loadProblems()
+        }
+    }
+
+    func onSortChanged() {
+        searchTask?.cancel()
+        searchTask = Task {
+            page = 0
+            await loadProblems(resetPage: true)
         }
     }
 }

@@ -84,6 +84,26 @@ enum APIError: LocalizedError {
     }
 }
 
+struct ProblemsResponse: Decodable {
+    let problems: [ProblemDTO]
+    let total: Int
+}
+
+enum SortOption: String, CaseIterable, Identifiable {
+    case `default` = ""
+    case ratingAsc = "rating_asc"
+    case ratingDesc = "rating_desc"
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .default: return "Default (Contest)"
+        case .ratingAsc: return "Rating (Low to High)"
+        case .ratingDesc: return "Rating (High to Low)"
+        }
+    }
+}
+
 struct ProblemDTO: Decodable {
     let backendId: Int?
     let contestId: String

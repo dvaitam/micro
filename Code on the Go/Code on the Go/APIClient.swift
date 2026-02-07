@@ -73,7 +73,7 @@ final class CodeforcesAPIClient: ObservableObject {
         return (try? JSONDecoder().decode([String].self, from: data)) ?? []
     }
 
-    func fetchProblems(limit: Int, offset: Int, tags: [String], tagsMode: String) async throws -> [Problem] {
+    func fetchProblems(limit: Int, offset: Int, tags: [String], tagsMode: String, sort: String = "") async throws -> (problems: [Problem], total: Int) {
         var components = URLComponents(string: baseURL + "/problems")
         components?.queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
@@ -83,10 +83,13 @@ final class CodeforcesAPIClient: ObservableObject {
             components?.queryItems?.append(URLQueryItem(name: "tags", value: tags.joined(separator: ",")))
             components?.queryItems?.append(URLQueryItem(name: "tags_mode", value: tagsMode))
         }
+        if !sort.isEmpty {
+            components?.queryItems?.append(URLQueryItem(name: "sort", value: sort))
+        }
         guard let url = components?.url else { throw APIError.invalidURL }
         let data = try await send(url: url, method: "GET")
-        let decoded = try JSONDecoder().decode([ProblemDTO].self, from: data)
-        return decoded.map { $0.toProblem() }
+        let decoded = try JSONDecoder().decode(ProblemsResponse.self, from: data)
+        return (decoded.problems.map { $0.toProblem() }, decoded.total)
     }
 
     func searchProblems(query: String, limit: Int = 20, offset: Int = 0) async throws -> [Problem] {

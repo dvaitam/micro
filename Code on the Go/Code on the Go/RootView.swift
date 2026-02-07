@@ -69,6 +69,20 @@ struct RootView: View {
                     problemsViewModel.onSearchQueryChanged()
                 }
             if !problemsViewModel.isSearching {
+                HStack {
+                    Text("Sort")
+                        .font(.headline)
+                    Spacer()
+                    Picker("Sort", selection: $problemsViewModel.sort) {
+                        ForEach(SortOption.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                .onChange(of: problemsViewModel.sort) { _ in
+                    problemsViewModel.onSortChanged()
+                }
                 TagSelectorView(tags: problemsViewModel.tags,
                                 selected: Binding(get: { problemsViewModel.selectedTags }, set: { problemsViewModel.selectedTags = $0 }),
                                 mode: $problemsViewModel.tagsMode) {
@@ -94,17 +108,32 @@ struct RootView: View {
     }
 
     private var paginationControls: some View {
-        HStack {
-            Button("Prev") { Task { await problemsViewModel.prevPage() } }
-                .disabled(problemsViewModel.page == 0 || problemsViewModel.isLoading)
-            Spacer()
-            Text("Page \(problemsViewModel.page + 1)")
-                .foregroundColor(.secondary)
-            Spacer()
-            Button("Next") { Task { await problemsViewModel.nextPage() } }
-                .disabled(problemsViewModel.isLoading)
+        VStack(spacing: 8) {
+            HStack {
+                Button("Prev") { Task { await problemsViewModel.prevPage() } }
+                    .disabled(problemsViewModel.page == 0 || problemsViewModel.isLoading)
+                Spacer()
+                Text("Page \(problemsViewModel.page + 1) of \(problemsViewModel.totalPages)")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button("Next") { Task { await problemsViewModel.nextPage() } }
+                    .disabled(problemsViewModel.page + 1 >= problemsViewModel.totalPages || problemsViewModel.isLoading)
+            }
+            .buttonStyle(.bordered)
+            HStack(spacing: 6) {
+                TextField("#", text: $problemsViewModel.goToPageText)
+                    .keyboardType(.numberPad)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                    .onSubmit { Task { await problemsViewModel.goToPage() } }
+                Button("Go") { Task { await problemsViewModel.goToPage() } }
+                    .buttonStyle(.bordered)
+                    .disabled(problemsViewModel.goToPageText.isEmpty)
+                Spacer()
+                Text("\(problemsViewModel.totalCount) total")
+                    .foregroundColor(.secondary)
+            }
         }
-        .buttonStyle(.bordered)
         .font(.footnote)
     }
 }
