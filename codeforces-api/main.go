@@ -582,6 +582,11 @@ func (s *server) applyStatusUpdate(ctx context.Context, upd statusMessage) error
 	if upd.ExitCode != nil {
 		exitCode = sql.NullInt32{Int32: int32(*upd.ExitCode), Valid: true}
 	}
+	response := strings.TrimSpace(upd.Verdict)
+	verdict := response
+	if len(verdict) > 256 {
+		verdict = verdict[:256]
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE submissions
 		SET status = COALESCE($1, status),
@@ -592,7 +597,7 @@ func (s *server) applyStatusUpdate(ctx context.Context, upd statusMessage) error
 		    verdict = COALESCE(NULLIF($6, ''), verdict),
 		    updated_at = NOW()
 		WHERE id = $7
-	`, upd.Status, upd.Stdout, upd.Stderr, upd.Verdict, exitCode, upd.Verdict, upd.SubmissionID)
+	`, upd.Status, upd.Stdout, upd.Stderr, response, exitCode, verdict, upd.SubmissionID)
 	return err
 }
 
@@ -1153,7 +1158,8 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 	}
 	ddl := []string{
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'queued'`,
-		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(64)`,
+		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(256)`,
+		`ALTER TABLE submissions ALTER COLUMN verdict TYPE VARCHAR(256)`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id INT`,
 		// Problems table for listing/metadata and tag filtering

@@ -524,7 +524,8 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	}
 	ddl := []string{
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'queued'`,
-		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(64)`,
+		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS verdict VARCHAR(256)`,
+		`ALTER TABLE submissions ALTER COLUMN verdict TYPE VARCHAR(256)`,
 		`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
 	}
 	for _, stmt := range ddl {
