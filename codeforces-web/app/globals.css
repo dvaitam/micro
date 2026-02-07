@@ -309,6 +309,27 @@ button:disabled {
   min-width: 80px;
 }
 
+.pagination-goto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.page-input {
+  width: 60px;
+  text-align: center;
+  padding: 6px 8px;
+  font-size: 14px;
+  -moz-appearance: textfield;
+}
+
+.page-input::-webkit-outer-spin-button,
+.page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .wide-card {
   grid-column: 1 / -1;
 }

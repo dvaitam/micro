@@ -22,7 +22,8 @@ export default function ContestListing({ params }) {
           throw new Error(`Failed to load problems (${res.status})`);
         }
         const data = await res.json();
-        if (!cancelled) setProblems(data || []);
+        const list = Array.isArray(data?.problems) ? data.problems : (Array.isArray(data) ? data : []);
+        if (!cancelled) setProblems(list);
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load problems');
       } finally {

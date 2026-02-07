@@ -235,12 +235,8 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-    query := `
-        SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
-               COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
-               COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
-        FROM problems
-    `
+    sortParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort")))
+
     var (
         where []string
         args  []interface{}
@@ -255,11 +251,9 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
         if len(tags) > 0 {
             mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tags_mode")))
             if mode == "all" {
-                // array contains all elements
                 where = append(where, fmt.Sprintf("tags @> $%d", len(args)+1))
                 args = append(args, pq.Array(tags))
             } else {
-                // any overlap
                 where = append(where, fmt.Sprintf("tags && $%d", len(args)+1))
                 args = append(args, pq.Array(tags))
             }
@@ -278,11 +272,38 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
             args = append(args, mv)
         }
     }
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += fmt.Sprintf(" ORDER BY contest_id, index_name LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
-	args = append(args, limit, offset)
+
+    whereClause := ""
+    if len(where) > 0 {
+        whereClause = " WHERE " + strings.Join(where, " AND ")
+    }
+
+    // Count total matching rows
+    var total int
+    countQuery := "SELECT COUNT(*) FROM problems" + whereClause
+    if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Build ORDER BY
+    orderBy := "contest_id, index_name"
+    switch sortParam {
+    case "rating_asc":
+        orderBy = "COALESCE(rating,0) ASC, contest_id, index_name"
+    case "rating_desc":
+        orderBy = "COALESCE(rating,0) DESC, contest_id, index_name"
+    }
+
+    query := fmt.Sprintf(`
+        SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
+               COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
+               COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
+        FROM problems
+        %s
+        ORDER BY %s LIMIT $%d OFFSET $%d
+    `, whereClause, orderBy, len(args)+1, len(args)+2)
+    args = append(args, limit, offset)
 
     rows, err := s.db.Query(query, args...)
     if err != nil {
@@ -299,7 +320,10 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
         }
         probs = append(probs, p)
     }
-    writeJSON(w, http.StatusOK, probs)
+    writeJSON(w, http.StatusOK, map[string]interface{}{
+        "problems": probs,
+        "total":    total,
+    })
 }
 
 func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
