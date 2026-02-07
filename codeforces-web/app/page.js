@@ -19,7 +19,7 @@ function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Initialize state from URL search params
+  // Initialize state from URL search params 
   const [problems, setProblems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [totalCount, setTotalCount] = useState(0);
