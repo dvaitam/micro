@@ -1,24 +1,37 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
+const wsBase = process.env.NEXT_PUBLIC_WS_URL || 'wss://codeforces-api.manchik.co.uk/ws';
 
-export default function SubmissionsPage() {
+export default function MySubmissionsPage() {
+  const [token, setToken] = useState('');
   const [subs, setSubs] = useState([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const socketRef = useRef(null);
 
   useEffect(() => {
-    fetchSubs(page);
-  }, [page]);
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('cf_token') : '';
+    if (saved) setToken(saved);
+  }, []);
+
+  useEffect(() => {
+    if (token) fetchSubs(page);
+    return () => {
+      if (socketRef.current) socketRef.current.close();
+    };
+  }, [token, page]);
 
   const fetchSubs = async (pageNum = 0) => {
-    const limit = 50;
+    const limit = 20;
     const offset = pageNum * limit;
     try {
-      const res = await fetch(`${apiBase}/submissions?limit=${limit}&offset=${offset}`);
+      const res = await fetch(`${apiBase}/me/submissions?limit=${limit}&offset=${offset}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) return;
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
@@ -33,8 +46,8 @@ export default function SubmissionsPage() {
     <main className="page">
       <header className="header">
         <div>
-          <h1>Recent Submissions</h1>
-          <p>All submissions across users.</p>
+          <h1>My Submissions</h1>
+          <p>Live progress per test.</p>
         </div>
         <div className="nav-links">
           <Link href="/">Home</Link>
@@ -45,10 +58,12 @@ export default function SubmissionsPage() {
         </div>
       </header>
 
+      {!token && <div className="notice error">Login on the home page to view your submissions.</div>}
+
       <section className="grid">
         <div className="card">
           <div className="card-header">
-            <h2>Recent submissions</h2>
+            <h2>Submissions</h2>
             <span className="muted">page {page + 1}</span>
           </div>
           <table className="status-table">

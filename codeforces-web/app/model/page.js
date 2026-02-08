@@ -79,7 +79,8 @@ function ModelView() {
         <div className="nav-links">
           <Link href="/">Problems</Link>
           <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">My submissions</Link>
+          <Link href="/submissions">Recent submissions</Link>
+          <Link href="/my/submissions">My submissions</Link>
           <Link href="/failed">Failed</Link>
           <a href="https://codeforces.com/" target="_blank" rel="noreferrer">
             Codeforces

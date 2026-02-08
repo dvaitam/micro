@@ -94,7 +94,8 @@ export default function LeaderboardPage() {
         </div>
         <div className="nav-links">
           <Link href="/">Problems</Link>
-          <Link href="/submissions">My submissions</Link>
+          <Link href="/submissions">Recent submissions</Link>
+          <Link href="/my/submissions">My submissions</Link>
         </div>
       </header>
 

@@ -236,7 +236,7 @@ export default function SubmitPage({ params }) {
         throw new Error(data?.error || 'submission failed');
       }
       setStatusLog([{ ts: new Date().toISOString(), status: data.status, detail: `Submission #${data.submission_id}` }]);
-      router.push('/submissions');
+      router.push('/my/submissions');
     } catch (err) {
       setStatusLog((prev) => [...prev, { ts: new Date().toISOString(), status: 'error', detail: err.message }]);
     }
@@ -277,7 +277,8 @@ export default function SubmitPage({ params }) {
         <div className="nav-links">
           <Link href="/">Problems</Link>
           <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">My submissions</Link>
+          <Link href="/submissions">Recent submissions</Link>
+          <Link href="/my/submissions">My submissions</Link>
           {loggedIn && (
             <>
               <span className="muted">{userEmail || 'user'}</span>

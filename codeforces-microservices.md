@@ -3,12 +3,14 @@
 This stack adds a small set of services that work only off the database rows for problem statements, reference solutions, and verifiers.
 
 - `codeforces-api` (Go, port `8082` by default): REST for listing problems and creating submissions, WebSocket fan-out for status updates, and Kafka producer/consumer wiring. It stores submissions immediately and returns right away on POST. Status changes flow through Kafka and are pushed to browsers over WebSockets.
+- `codeforces-generator` (Go, port `8083` by default): Generates solutions with a model provider, inserts submissions into Postgres, and publishes submission IDs to Kafka. Use this to enqueue large batches (e.g. 10,000 problems).
 - `codeforces-worker` (Go): Kafka consumer for the submission topic. It flips submissions to `processing`, simulates a verifier run (placeholder), and publishes status updates to Kafka.
 - `codeforces-web` (Next.js): Front-end that reads problems from the API, posts submissions, and streams status updates over WebSockets.
 
 ### Topics and schema
 - Kafka submission topic: `cf.submissions` (override with `KAFKA_SUBMISSION_TOPIC`).
 - Kafka status topic: `cf.submission_status` (override with `KAFKA_STATUS_TOPIC`).
+- Optional partitions: `KAFKA_SUBMISSION_PARTITIONS`, `KAFKA_STATUS_PARTITIONS`, `KAFKA_OTP_PARTITIONS`.
 - The API ensures the `submissions` table exists and adds `status`, `verdict`, and `updated_at` columns if they are missing.
 
 ### Running locally
@@ -27,7 +29,17 @@ This stack adds a small set of services that work only off the database rows for
    KAFKA_BROKERS="localhost:9092" \
    go run .
    ```
-4. Web:
+4. Generator (enqueue 10,000 problems):
+   ```bash
+   cd /home/ubuntu/micro/codeforces-generator
+   DB_DSN="postgres://postgres:password@localhost:5432/codeforces?sslmode=disable" \
+   KAFKA_BROKERS="localhost:9092" \
+   DEFAULT_PROVIDER="openrouter" \
+   DEFAULT_MODEL="your-model" \
+   DEFAULT_API_KEY="your-key" \
+   go run . -mode=enqueue -count=10000 -lang=go -concurrency=8
+   ```
+5. Web:
    ```bash
    cd /home/ubuntu/micro/codeforces-web
    npm install

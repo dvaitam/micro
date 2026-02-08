@@ -47,8 +47,14 @@ func main() {
 	submissionTopic := getenv("KAFKA_SUBMISSION_TOPIC", "cf.submissions")
 	statusTopic := getenv("KAFKA_STATUS_TOPIC", "cf.submission_status")
 	streamTests := strings.ToLower(getenv("STREAM_TEST_PROGRESS", "true")) == "true"
+	workerConcurrency := getenvInt("WORKER_CONCURRENCY", 4)
+	subPartitions := getenvInt("KAFKA_SUBMISSION_PARTITIONS", 1)
+	statusPartitions := getenvInt("KAFKA_STATUS_PARTITIONS", 1)
 
-	if err := ensureKafkaTopics(context.Background(), brokers, []string{submissionTopic, statusTopic}); err != nil {
+	if err := ensureKafkaTopics(context.Background(), brokers, map[string]int{
+		submissionTopic: subPartitions,
+		statusTopic:     statusPartitions,
+	}); err != nil {
 		log.Fatalf("failed to ensure kafka topics: %v", err)
 	}
 
@@ -81,7 +87,23 @@ func main() {
 	defer reader.Close()
 	defer producer.Close()
 
-	log.Printf("codeforces-worker consuming %s, producing %s", submissionTopic, statusTopic)
+	if workerConcurrency < 1 {
+		workerConcurrency = 1
+	}
+	jobs := make(chan int64, workerConcurrency*2)
+	for i := 0; i < workerConcurrency; i++ {
+		go func(workerID int) {
+			for id := range jobs {
+				if err := handleSubmission(context.Background(), db, producer, id, streamTests); err != nil {
+					log.Printf("worker %d: submission %d failed: %v", workerID, id, err)
+					status := statusMessage{SubmissionID: id, Status: "failed", Verdict: err.Error()}
+					_ = publishStatus(context.Background(), producer, status)
+				}
+			}
+		}(i + 1)
+	}
+
+	log.Printf("codeforces-worker consuming %s, producing %s (concurrency=%d)", submissionTopic, statusTopic, workerConcurrency)
 	for {
 		msg, err := reader.ReadMessage(context.Background())
 		if err != nil {
@@ -101,13 +123,7 @@ func main() {
 			log.Printf("missing submission_id in payload")
 			continue
 		}
-		go func(id int64) {
-			if err := handleSubmission(context.Background(), db, producer, id, streamTests); err != nil {
-				log.Printf("submission %d failed: %v", id, err)
-				status := statusMessage{SubmissionID: id, Status: "failed", Verdict: err.Error()}
-				_ = publishStatus(context.Background(), producer, status)
-			}
-		}(subMsg.SubmissionID)
+		jobs <- subMsg.SubmissionID
 	}
 }
 
@@ -536,7 +552,7 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) error {
+func ensureKafkaTopics(ctx context.Context, brokers []string, topics map[string]int) error {
 	if len(brokers) == 0 || len(topics) == 0 {
 		return nil
 	}
@@ -547,13 +563,16 @@ func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) e
 	defer conn.Close()
 
 	var configs []kafka.TopicConfig
-	for _, t := range topics {
+	for t, partitions := range topics {
 		if strings.TrimSpace(t) == "" {
 			continue
 		}
+		if partitions <= 0 {
+			partitions = 1
+		}
 		configs = append(configs, kafka.TopicConfig{
 			Topic:             t,
-			NumPartitions:     1,
+			NumPartitions:     partitions,
 			ReplicationFactor: 1,
 		})
 	}
@@ -583,6 +602,15 @@ func verifierFilename(index string) string {
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func getenvInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

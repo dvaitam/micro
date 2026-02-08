@@ -1,25 +1,25 @@
 package main
 
 import (
-    "context"
-    "database/sql"
-    "encoding/json"
-    "errors"
-    "fmt"
-    "log"
-    "net/http"
-    "os"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-    _ "github.com/go-sql-driver/mysql"
-    "github.com/golang-jwt/jwt/v5"
-    "github.com/google/uuid"
-    "github.com/gorilla/websocket"
-    pq "github.com/lib/pq"
-    "github.com/segmentio/kafka-go"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	pq "github.com/lib/pq"
+	"github.com/segmentio/kafka-go"
 )
 
 var jwtSecret = []byte(getenv("JWT_SECRET", "very-secret-key-change-in-prod"))
@@ -30,15 +30,15 @@ type Claims struct {
 }
 
 type problem struct {
-    ID                int64  `json:"id"`
-    ContestID         string `json:"contest_id"`
-    Index             string `json:"index"`
-    Title             string `json:"title"`
-    Statement         string `json:"statement"`
-    ReferenceSolution string `json:"reference_solution,omitempty"`
-    Verifier          string `json:"verifier,omitempty"`
-    Rating            int    `json:"rating,omitempty"`
-    Tags              []string `json:"tags,omitempty"`
+	ID                int64    `json:"id"`
+	ContestID         string   `json:"contest_id"`
+	Index             string   `json:"index"`
+	Title             string   `json:"title"`
+	Statement         string   `json:"statement"`
+	ReferenceSolution string   `json:"reference_solution,omitempty"`
+	Verifier          string   `json:"verifier,omitempty"`
+	Rating            int      `json:"rating,omitempty"`
+	Tags              []string `json:"tags,omitempty"`
 }
 
 type submissionRequest struct {
@@ -125,8 +125,15 @@ func main() {
 	submissionTopic := getenv("KAFKA_SUBMISSION_TOPIC", "cf.submissions")
 	statusTopic := getenv("KAFKA_STATUS_TOPIC", "cf.submission_status")
 	otpTopic := getenv("KAFKA_OTP_TOPIC", "new-registration")
+	subPartitions := getenvInt("KAFKA_SUBMISSION_PARTITIONS", 1)
+	statusPartitions := getenvInt("KAFKA_STATUS_PARTITIONS", 1)
+	otpPartitions := getenvInt("KAFKA_OTP_PARTITIONS", 1)
 
-	if err := ensureKafkaTopicsWithRetry(context.Background(), brokers, []string{submissionTopic, statusTopic, otpTopic}, 10, 3*time.Second); err != nil {
+	if err := ensureKafkaTopicsWithRetry(context.Background(), brokers, map[string]int{
+		submissionTopic: subPartitions,
+		statusTopic:     statusPartitions,
+		otpTopic:        otpPartitions,
+	}, 10, 3*time.Second); err != nil {
 		log.Printf("warning: continuing without ensuring kafka topics: %v", err)
 	}
 
@@ -235,67 +242,67 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-    sortParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort")))
+	sortParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort")))
 
-    var (
-        where []string
-        args  []interface{}
-    )
-    if contestFilter != "" {
-        where = append(where, fmt.Sprintf("contest_id = $%d", len(args)+1))
-        args = append(args, contestFilter)
-    }
-    // Tag filtering: tags=tag1,tag2 and tags_mode=any|all (default any)
-    if tagsCSV := strings.TrimSpace(r.URL.Query().Get("tags")); tagsCSV != "" {
-        tags := splitAndTrim(tagsCSV)
-        if len(tags) > 0 {
-            mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tags_mode")))
-            if mode == "all" {
-                where = append(where, fmt.Sprintf("tags @> $%d", len(args)+1))
-                args = append(args, pq.Array(tags))
-            } else {
-                where = append(where, fmt.Sprintf("tags && $%d", len(args)+1))
-                args = append(args, pq.Array(tags))
-            }
-        }
-    }
-    // Optional rating range
-    if minStr := strings.TrimSpace(r.URL.Query().Get("min_rating")); minStr != "" {
-        if mv, err := strconv.Atoi(minStr); err == nil {
-            where = append(where, fmt.Sprintf("COALESCE(rating,0) >= $%d", len(args)+1))
-            args = append(args, mv)
-        }
-    }
-    if maxStr := strings.TrimSpace(r.URL.Query().Get("max_rating")); maxStr != "" {
-        if mv, err := strconv.Atoi(maxStr); err == nil {
-            where = append(where, fmt.Sprintf("COALESCE(rating,0) <= $%d", len(args)+1))
-            args = append(args, mv)
-        }
-    }
+	var (
+		where []string
+		args  []interface{}
+	)
+	if contestFilter != "" {
+		where = append(where, fmt.Sprintf("contest_id = $%d", len(args)+1))
+		args = append(args, contestFilter)
+	}
+	// Tag filtering: tags=tag1,tag2 and tags_mode=any|all (default any)
+	if tagsCSV := strings.TrimSpace(r.URL.Query().Get("tags")); tagsCSV != "" {
+		tags := splitAndTrim(tagsCSV)
+		if len(tags) > 0 {
+			mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tags_mode")))
+			if mode == "all" {
+				where = append(where, fmt.Sprintf("tags @> $%d", len(args)+1))
+				args = append(args, pq.Array(tags))
+			} else {
+				where = append(where, fmt.Sprintf("tags && $%d", len(args)+1))
+				args = append(args, pq.Array(tags))
+			}
+		}
+	}
+	// Optional rating range
+	if minStr := strings.TrimSpace(r.URL.Query().Get("min_rating")); minStr != "" {
+		if mv, err := strconv.Atoi(minStr); err == nil {
+			where = append(where, fmt.Sprintf("COALESCE(rating,0) >= $%d", len(args)+1))
+			args = append(args, mv)
+		}
+	}
+	if maxStr := strings.TrimSpace(r.URL.Query().Get("max_rating")); maxStr != "" {
+		if mv, err := strconv.Atoi(maxStr); err == nil {
+			where = append(where, fmt.Sprintf("COALESCE(rating,0) <= $%d", len(args)+1))
+			args = append(args, mv)
+		}
+	}
 
-    whereClause := ""
-    if len(where) > 0 {
-        whereClause = " WHERE " + strings.Join(where, " AND ")
-    }
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = " WHERE " + strings.Join(where, " AND ")
+	}
 
-    // Count total matching rows
-    var total int
-    countQuery := "SELECT COUNT(*) FROM problems" + whereClause
-    if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
+	// Count total matching rows
+	var total int
+	countQuery := "SELECT COUNT(*) FROM problems" + whereClause
+	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-    // Build ORDER BY
-    orderBy := "contest_id, index_name"
-    switch sortParam {
-    case "rating_asc":
-        orderBy = "COALESCE(rating,0) ASC, contest_id, index_name"
-    case "rating_desc":
-        orderBy = "COALESCE(rating,0) DESC, contest_id, index_name"
-    }
+	// Build ORDER BY
+	orderBy := "contest_id, index_name"
+	switch sortParam {
+	case "rating_asc":
+		orderBy = "COALESCE(rating,0) ASC, contest_id, index_name"
+	case "rating_desc":
+		orderBy = "COALESCE(rating,0) DESC, contest_id, index_name"
+	}
 
-    query := fmt.Sprintf(`
+	query := fmt.Sprintf(`
         SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
                COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
                COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
@@ -303,27 +310,27 @@ func (s *server) handleProblems(w http.ResponseWriter, r *http.Request) {
         %s
         ORDER BY %s LIMIT $%d OFFSET $%d
     `, whereClause, orderBy, len(args)+1, len(args)+2)
-    args = append(args, limit, offset)
+	args = append(args, limit, offset)
 
-    rows, err := s.db.Query(query, args...)
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
-    defer rows.Close()
-    var probs []problem
-    for rows.Next() {
-        var p problem
-        if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier, &p.Rating, pq.Array(&p.Tags)); err != nil {
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return
-        }
-        probs = append(probs, p)
-    }
-    writeJSON(w, http.StatusOK, map[string]interface{}{
-        "problems": probs,
-        "total":    total,
-    })
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var probs []problem
+	for rows.Next() {
+		var p problem
+		if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Statement, &p.ReferenceSolution, &p.Verifier, &p.Rating, pq.Array(&p.Tags)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		probs = append(probs, p)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"problems": probs,
+		"total":    total,
+	})
 }
 
 func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +346,7 @@ func (s *server) handleProblemByPath(w http.ResponseWriter, r *http.Request) {
 	contest := parts[0]
 	index := parts[1]
 	var p problem
-    err := s.db.QueryRow(`
+	err := s.db.QueryRow(`
         SELECT id, contest_id, index_name, COALESCE(title, ''), COALESCE(statement, ''),
                COALESCE(reference_solution, ''), COALESCE(verifier, ''), COALESCE(rating,0),
                COALESCE(ARRAY(SELECT x FROM unnest(tags) AS x), ARRAY[]::text[])
@@ -444,13 +451,9 @@ func (s *server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 
 	contest := strings.TrimSpace(r.URL.Query().Get("contest"))
 	index := strings.TrimSpace(r.URL.Query().Get("index"))
-	if contest == "" || index == "" {
-		http.Error(w, "contest and index are required", http.StatusBadRequest)
-		return
-	}
 	limit := 50
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
-		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 500 {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 200 {
 			limit = l
 		}
 	}
@@ -459,6 +462,35 @@ func (s *server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
 			offset = o
 		}
+	}
+	if contest == "" || index == "" {
+		rows, err := s.db.Query(`
+			SELECT id, contest_id, problem_letter, lang,
+			       COALESCE(status,''), COALESCE(verdict,''), COALESCE(exit_code,0),
+			       timestamp
+			FROM submissions
+			ORDER BY id DESC
+			LIMIT $1 OFFSET $2
+		`, limit, offset)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		var list []submissionRecord
+		for rows.Next() {
+			var rec submissionRecord
+			var ts time.Time
+			if err := rows.Scan(&rec.ID, &rec.ContestID, &rec.Index, &rec.Lang, &rec.Status, &rec.Verdict, &rec.ExitCode, &ts); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			rec.Timestamp = ts.Format(time.RFC3339)
+			rec.Code, rec.Stdout, rec.Stderr, rec.Response = "", "", "", ""
+			list = append(list, rec)
+		}
+		writeJSON(w, http.StatusOK, list)
+		return
 	}
 	rows, err := s.db.Query(`
 		SELECT id, contest_id, problem_letter, lang,
@@ -1190,8 +1222,8 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 			stderr TEXT,
 			reviewied SMALLINT DEFAULT 0
 		)`,
-        `ALTER TABLE problems ADD COLUMN IF NOT EXISTS rating INT`,
-        `ALTER TABLE problems ADD COLUMN IF NOT EXISTS tags TEXT[]`,
+		`ALTER TABLE problems ADD COLUMN IF NOT EXISTS rating INT`,
+		`ALTER TABLE problems ADD COLUMN IF NOT EXISTS tags TEXT[]`,
 		// If an older schema had tags as TEXT, coerce to TEXT[]
 		`DO $$ BEGIN
 		  IF EXISTS (
@@ -1209,7 +1241,7 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 		  END IF;
 		END $$;`,
 		// Clean any incorrectly converted tag elements that still contain quotes/braces
-        `UPDATE problems SET tags = (
+		`UPDATE problems SET tags = (
            SELECT COALESCE(ARRAY(
              SELECT DISTINCT lower(
                trim(both ' ' from
@@ -1250,12 +1282,12 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_submissions_user ON submissions(user_id)`,
 	}
-    for _, stmt := range ddl {
-        if _, err := db.ExecContext(ctx, stmt); err != nil {
-            return err
-        }
-    }
-    return nil
+	for _, stmt := range ddl {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pqArray scans a Postgres text[] into a []string pointer.
@@ -1375,11 +1407,11 @@ func parseIdentifier(s string) (contestID, indexName string) {
 
 // handleTags returns distinct tags from problems.
 func (s *server) handleTags(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodGet {
-        w.WriteHeader(http.StatusMethodNotAllowed)
-        return
-    }
-    rows, err := s.db.Query(`
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rows, err := s.db.Query(`
         SELECT DISTINCT
           lower(
             trim(both ' ' from
@@ -1406,21 +1438,26 @@ func (s *server) handleTags(w http.ResponseWriter, r *http.Request) {
             )
           ) <> ''
         ORDER BY 1`)
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
-    defer rows.Close()
-    var tags []string
-    for rows.Next() {
-        var t string
-        if err := rows.Scan(&t); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
-        if strings.TrimSpace(t) != "" { tags = append(tags, t) }
-    }
-    writeJSON(w, http.StatusOK, tags)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var tags []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(t) != "" {
+			tags = append(tags, t)
+		}
+	}
+	writeJSON(w, http.StatusOK, tags)
 }
 
-func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) error {
+func ensureKafkaTopics(ctx context.Context, brokers []string, topics map[string]int) error {
 	if len(brokers) == 0 || len(topics) == 0 {
 		return nil
 	}
@@ -1431,13 +1468,16 @@ func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) e
 	defer conn.Close()
 
 	var configs []kafka.TopicConfig
-	for _, t := range topics {
+	for t, partitions := range topics {
 		if strings.TrimSpace(t) == "" {
 			continue
 		}
+		if partitions <= 0 {
+			partitions = 1
+		}
 		configs = append(configs, kafka.TopicConfig{
 			Topic:             t,
-			NumPartitions:     1,
+			NumPartitions:     partitions,
 			ReplicationFactor: 1,
 		})
 	}
@@ -1447,7 +1487,7 @@ func ensureKafkaTopics(ctx context.Context, brokers []string, topics []string) e
 	return conn.CreateTopics(configs...)
 }
 
-func ensureKafkaTopicsWithRetry(ctx context.Context, brokers []string, topics []string, attempts int, delay time.Duration) error {
+func ensureKafkaTopicsWithRetry(ctx context.Context, brokers []string, topics map[string]int, attempts int, delay time.Duration) error {
 	for i := 1; i <= attempts; i++ {
 		if err := ensureKafkaTopics(ctx, brokers, topics); err == nil {
 			return nil
@@ -1488,6 +1528,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func getenvInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }
@@ -1578,4 +1627,5 @@ func (c *wsClient) writePump() {
 		}
 	}
 }
+
 //jenkins

@@ -111,7 +111,8 @@ function FailedContent({ params }) {
         </div>
         <div className="nav-links">
           <Link href="/">Home</Link>
-          <Link href="/submissions">My submissions</Link>
+          <Link href="/submissions">Recent submissions</Link>
+          <Link href="/my/submissions">My submissions</Link>
           <Link href="/leaderboard">Leaderboard</Link>
           <a href="https://codeforces.com/" target="_blank" rel="noreferrer">
             Codeforces

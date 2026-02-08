@@ -43,9 +43,11 @@ export default function ContestListing({ params }) {
           <h1>Contest {contest}</h1>
           <p className="muted">Problems available for this contest</p>
         </div>
-        <Link className="muted" href="/submissions">
-          My submissions
-        </Link>
+        <div className="nav-links">
+          <Link href="/">Home</Link>
+          <Link href="/submissions">Recent submissions</Link>
+          <Link href="/my/submissions">My submissions</Link>
+        </div>
       </header>
 
       <section className="card">
