@@ -62,49 +62,78 @@ struct RootView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            LoginSummaryView()
-            SearchBar(text: $problemsViewModel.searchQuery, placeholder: "Search by ID (475D) or title…")
-                .onChange(of: problemsViewModel.searchQuery) { _ in
-                    problemsViewModel.onSearchQueryChanged()
-                }
-            if !problemsViewModel.isSearching {
-                HStack {
-                    Text("Sort")
-                        .font(.headline)
-                    Spacer()
-                    Picker("Sort", selection: $problemsViewModel.sort) {
-                        ForEach(SortOption.allCases) { option in
-                            Text(option.label).tag(option)
-                        }
+        List(selection: Binding<String?>(
+            get: { selectedProblem?.id },
+            set: { id in
+                selectedProblem = id.flatMap { id in problemsViewModel.problems.first { $0.id == id } }
+            }
+        )) {
+            Section {
+                LoginSummaryView()
+                SearchBar(text: $problemsViewModel.searchQuery, placeholder: "Search by ID (475D) or title…")
+                    .onChange(of: problemsViewModel.searchQuery) { _ in
+                        problemsViewModel.onSearchQueryChanged()
                     }
-                    .pickerStyle(.menu)
+                if !problemsViewModel.isSearching {
+                    HStack {
+                        Text("Sort")
+                            .font(.headline)
+                        Spacer()
+                        Picker("Sort", selection: $problemsViewModel.sort) {
+                            ForEach(SortOption.allCases) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    .onChange(of: problemsViewModel.sort) { _ in
+                        problemsViewModel.onSortChanged()
+                    }
+                    TagSelectorView(tags: problemsViewModel.tags,
+                                    selected: Binding(get: { problemsViewModel.selectedTags }, set: { problemsViewModel.selectedTags = $0 }),
+                                    mode: $problemsViewModel.tagsMode) {
+                        Task { await problemsViewModel.loadProblems(resetPage: true) }
+                    }
                 }
-                .onChange(of: problemsViewModel.sort) { _ in
-                    problemsViewModel.onSortChanged()
+                if let error = problemsViewModel.errorMessage {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.footnote)
                 }
-                TagSelectorView(tags: problemsViewModel.tags,
-                                selected: Binding(get: { problemsViewModel.selectedTags }, set: { problemsViewModel.selectedTags = $0 }),
-                                mode: $problemsViewModel.tagsMode) {
-                    Task { await problemsViewModel.loadProblems(resetPage: true) }
+                if problemsViewModel.isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
                 }
             }
-            if let error = problemsViewModel.errorMessage {
-                Text(error)
-                    .foregroundColor(.red)
-                    .font(.footnote)
-            }
-            if problemsViewModel.isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
+            .listRowSeparator(.hidden)
+
+            Section {
+                ForEach(problemsViewModel.problems) { problem in
+                    ProblemRow(problem: problem, isSelected: selectedProblem?.id == problem.id)
+                        .tag(problem.id)
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(selectedProblem?.id == problem.id ? Color.accentColor.opacity(0.12) : Color(UIColor.secondarySystemBackground))
+                                .padding(.vertical, 2)
+                        )
+                }
+                if problemsViewModel.problems.isEmpty {
+                    Text("No problems available.")
+                        .foregroundColor(.secondary)
+                        .padding()
                 }
             }
-            ProblemListView(problems: problemsViewModel.problems, selected: $selectedProblem)
-            paginationControls
+            .listRowSeparator(.hidden)
+
+            Section {
+                paginationControls
+            }
+            .listRowSeparator(.hidden)
         }
-        .padding()
+        .listStyle(.plain)
     }
 
     private var paginationControls: some View {
@@ -138,32 +167,6 @@ struct RootView: View {
     }
 }
 
-struct ProblemListView: View {
-    let problems: [Problem]
-    @Binding var selected: Problem?
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(problems) { problem in
-                    ProblemRow(problem: problem, isSelected: selected?.id == problem.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selected = problem }
-                        .padding(8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(selected?.id == problem.id ? Color.accentColor.opacity(0.12) : Color(UIColor.secondarySystemBackground))
-                        )
-                }
-                if problems.isEmpty {
-                    Text("No problems available.")
-                        .foregroundColor(.secondary)
-                        .padding()
-                }
-            }
-        }
-    }
-}
 
 struct ProblemRow: View {
     let problem: Problem

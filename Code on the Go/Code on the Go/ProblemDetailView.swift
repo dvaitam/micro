@@ -25,7 +25,7 @@ struct ProblemDetailView: View {
                 }
             }
         }
-        .navigationBarHidden(true)
+        .navigationBarTitleDisplayMode(.inline)
         .task { await loadProblem() }
     }
 
