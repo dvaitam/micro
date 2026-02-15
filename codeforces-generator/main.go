@@ -133,7 +133,7 @@ func main() {
 	useResponses := flag.Bool("use-responses", strings.ToLower(getenv("DEFAULT_USE_RESPONSES", "false")) == "true", "Use responses endpoint when supported")
 	count := flag.Int("count", 0, "How many problems to enqueue (enqueue mode)")
 	concurrency := flag.Int("concurrency", getenvInt("GENERATOR_CONCURRENCY", 4), "Concurrency for generation")
-	requestTimeout = getenvDuration("LLM_TIMEOUT", 120*time.Second)
+	requestTimeout = getenvDuration("LLM_TIMEOUT", 1200*time.Second)
 	flag.Parse()
 
 	dbDSN := getenv("DB_DSN", "postgres://postgres:password@localhost:5432/codeforces?sslmode=disable")
