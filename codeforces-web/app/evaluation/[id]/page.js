@@ -78,7 +78,7 @@ export default function EvaluationFixPage({ params }) {
               <h2>Metadata</h2>
             </div>
             <div className="muted">
-              {data.model} · {data.lang} · {data.provider}
+              <Link href={`/model?name=${encodeURIComponent(data.model)}`}>{data.model}</Link> · {data.lang} · {data.provider}
             </div>
             <div>
               Problem:{' '}

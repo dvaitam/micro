@@ -123,7 +123,7 @@ export default function LeaderboardPage() {
                 {leaders.map((l) => (
                   <tr key={l.run_id}>
                     <td>{l.run_id}</td>
-                  <td>{l.model}</td>
+                  <td><Link href={`/model?name=${encodeURIComponent(l.model)}`}>{l.model}</Link></td>
                   <td>{l.lang}</td>
                   <td>{l.rating}</td>
                   <td className="muted">{l.timestamp}</td>
@@ -171,7 +171,7 @@ export default function LeaderboardPage() {
                   <tr key={e.id}>
                     <td>#{e.id}</td>
                     <td>{e.run_id}</td>
-                    <td>{e.model}</td>
+                    <td><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
                     <td>{e.lang}</td>
                     <td>
                       <Link href={`/contest/${e.contest_id}/problem/${e.index}`}>

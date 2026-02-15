@@ -475,7 +475,7 @@ export default function ProblemPage({ params }) {
                           <Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link>
                         </td>
                         <td className="hide-mobile">{e.run_id || '—'}</td>
-                        <td>{e.model}</td>
+                        <td><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
                         <td>{e.lang}</td>
                         <td>
                           <span

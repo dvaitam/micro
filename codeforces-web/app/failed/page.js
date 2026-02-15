@@ -184,7 +184,7 @@ function FailedContent({ params }) {
             {rows.map((r) => (
               <tr key={r.id}>
                 <td>#{r.id}</td>
-                <td>{r.model || '—'}</td>
+                <td>{r.model ? <Link href={`/model?name=${encodeURIComponent(r.model)}`}>{r.model}</Link> : '—'}</td>
                 <td>
                   <Link href={`/contest/${r.contest_id}/problem/${r.index}`}>
                     {r.contest_id}
