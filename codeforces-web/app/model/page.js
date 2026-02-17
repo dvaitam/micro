@@ -7,27 +7,6 @@ import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
-function extractCodeBlock(text) {
-  if (!text) return '';
-  const match = text.match(/```(?:[\w.+-]*\n)?([\s\S]*?)```/m);
-  if (match) return match[1].trim();
-  return text.trim();
-}
-
-function stripComments(code) {
-  if (!code) return '';
-  let cleaned = code.replace(/\/\*[\s\S]*?\*\//g, '');
-  cleaned = cleaned.replace(/(^|\s)#.*$/gm, '$1');
-  cleaned = cleaned.replace(/\/\/.*$/gm, '');
-  cleaned = cleaned.replace(/--.*$/gm, '');
-  return cleaned.trim();
-}
-
-function cleanedResponse(response) {
-  const code = extractCodeBlock(response || '');
-  return stripComments(code);
-}
-
 function ModelView() {
   const searchParams = useSearchParams();
   const name = searchParams.get('name') || '';
@@ -35,8 +14,6 @@ function ModelView() {
   const [evals, setEvals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [copiedId, setCopiedId] = useState(null);
-
   useEffect(() => {
     if (name) loadModel(name);
   }, [name]);
@@ -54,17 +31,6 @@ function ModelView() {
       setEvals([]);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const copyCleaned = async (resText, id) => {
-    const snippet = cleanedResponse(resText);
-    try {
-      await navigator.clipboard.writeText(snippet);
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 1500);
-    } catch (err) {
-      console.error('copy failed', err);
     }
   };
 
@@ -109,13 +75,12 @@ function ModelView() {
                   <th>Lang</th>
                   <th>Success</th>
                   <th>Timestamp</th>
-                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {evals.map((e) => (
                   <tr key={e.id}>
-                    <td>#{e.id}</td>
+                    <td><Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link></td>
                     <td>{e.run_id || '—'}</td>
                     <td>
                       <Link href={`/contest/${e.contest_id}/problem/${e.index}`}>
@@ -127,17 +92,11 @@ function ModelView() {
                     <td>{e.lang}</td>
                     <td>{e.success ? 'yes' : 'no'}</td>
                     <td className="muted">{e.timestamp}</td>
-                    <td className="row gap-8">
-                      <Link href={`/evaluation/${e.id}/fix`}>Fix prompt</Link>
-                      <button onClick={() => copyCleaned(e.response, e.id)}>
-                        {copiedId === e.id ? 'Copied' : 'Cleaned up response'}
-                      </button>
-                    </td>
                   </tr>
                 ))}
                 {evals.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={8} className="muted">
+                    <td colSpan={7} className="muted">
                       No evaluations for this model.
                     </td>
                   </tr>
