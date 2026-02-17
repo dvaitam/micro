@@ -7,6 +7,27 @@ import ModelLogo from '../../../../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
+function extractCodeBlock(text) {
+  if (!text) return '';
+  const match = text.match(/```(?:[\w.+-]*\n)?([\s\S]*?)```/m);
+  if (match) return match[1].trim();
+  return text.trim();
+}
+
+function stripComments(code) {
+  if (!code) return '';
+  let cleaned = code.replace(/\/\*[\s\S]*?\*\//g, '');
+  cleaned = cleaned.replace(/(^|\s)#.*$/gm, '$1');
+  cleaned = cleaned.replace(/\/\/.*$/gm, '');
+  cleaned = cleaned.replace(/--.*$/gm, '');
+  return cleaned.trim();
+}
+
+function cleanedResponse(response) {
+  const code = extractCodeBlock(response || '');
+  return stripComments(code);
+}
+
 export default function ProblemPage({ params }) {
   const contest = params.contest;
   const index = params.index;
@@ -267,7 +288,7 @@ export default function ProblemPage({ params }) {
       goToSubmit({
         contest: String(contest),
         index: String(index),
-        code: data.response || '',
+        code: cleanedResponse(data.response),
         lang: data.lang || fallbackLang || 'go',
       });
     } catch (err) {
