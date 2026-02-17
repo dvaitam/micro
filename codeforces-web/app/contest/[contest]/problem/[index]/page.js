@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ModelLogo from '../../../../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
@@ -475,7 +476,7 @@ export default function ProblemPage({ params }) {
                           <Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link>
                         </td>
                         <td className="hide-mobile">{e.run_id || '—'}</td>
-                        <td><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
+                        <td><ModelLogo model={e.model} /><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
                         <td>{e.lang}</td>
                         <td>
                           <span
