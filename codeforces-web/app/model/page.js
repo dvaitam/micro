@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
@@ -73,7 +74,7 @@ function ModelView() {
     <main className="page">
       <header className="header">
         <div>
-          <h1>{title}</h1>
+          <h1><ModelLogo model={name} />{title}</h1>
           <p className="muted">Recent evaluations for the selected model.</p>
         </div>
         <div className="nav-links">

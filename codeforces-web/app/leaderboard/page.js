@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
@@ -123,7 +124,7 @@ export default function LeaderboardPage() {
                 {leaders.map((l) => (
                   <tr key={l.run_id}>
                     <td>{l.run_id}</td>
-                  <td><Link href={`/model?name=${encodeURIComponent(l.model)}`}>{l.model}</Link></td>
+                  <td><ModelLogo model={l.model} /><Link href={`/model?name=${encodeURIComponent(l.model)}`}>{l.model}</Link></td>
                   <td>{l.lang}</td>
                   <td>{l.rating}</td>
                   <td className="muted">{l.timestamp}</td>
@@ -171,7 +172,7 @@ export default function LeaderboardPage() {
                   <tr key={e.id}>
                     <td>#{e.id}</td>
                     <td>{e.run_id}</td>
-                    <td><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
+                    <td><ModelLogo model={e.model} /><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
                     <td>{e.lang}</td>
                     <td>
                       <Link href={`/contest/${e.contest_id}/problem/${e.index}`}>

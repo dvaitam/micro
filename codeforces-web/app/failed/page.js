@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Suspense, useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
@@ -184,7 +185,7 @@ function FailedContent({ params }) {
             {rows.map((r) => (
               <tr key={r.id}>
                 <td>#{r.id}</td>
-                <td>{r.model ? <Link href={`/model?name=${encodeURIComponent(r.model)}`}>{r.model}</Link> : '—'}</td>
+                <td>{r.model ? <><ModelLogo model={r.model} /><Link href={`/model?name=${encodeURIComponent(r.model)}`}>{r.model}</Link></> : '—'}</td>
                 <td>
                   <Link href={`/contest/${r.contest_id}/problem/${r.index}`}>
                     {r.contest_id}
