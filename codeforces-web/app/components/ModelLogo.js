@@ -13,6 +13,7 @@ const MODEL_LOGOS = [
   { match: 'o4', logo: 'https://cdn.openai.com/favicon.ico' },
   { match: 'deepseek', logo: 'https://www.deepseek.com/favicon.ico' },
   { match: 'qwen', logo: 'https://img.alicdn.com/imgextra/i1/O1CN01AKUdEM1GReZ4JMeCH_!!6000000000619-73-tps-16-16.ico' },
+  { match: 'glm', logo: 'https://z-cdn.chatglm.cn/z-ai/static/logo.svg' },
 ];
 
 export function getModelLogo(modelName) {
