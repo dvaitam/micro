@@ -172,6 +172,23 @@ final class CodeforcesAPIClient: ObservableObject {
         return try JSONDecoder().decode(SubmissionDetail.self, from: data)
     }
 
+    func fetchProblemSubmissions(contest: String, index: String, limit: Int = 50) async throws -> [SubmissionDetail] {
+        let data = try await send(path: "/submissions?contest=\(contest)&index=\(index)&limit=\(limit)", method: "GET")
+        return (try? JSONDecoder().decode([SubmissionDetail].self, from: data)) ?? []
+    }
+
+    func fetchUserSubmissions(limit: Int = 50, offset: Int = 0) async throws -> [SubmissionDetail] {
+        try await ensureAuthorized()
+        do {
+            let data = try await authorizedRequest(path: "/me/submissions?limit=\(limit)&offset=\(offset)", method: "GET")
+            return (try? JSONDecoder().decode([SubmissionDetail].self, from: data)) ?? []
+        } catch APIError.unauthorized {
+            guard await refreshSession() else { throw APIError.unauthorized }
+            let data = try await authorizedRequest(path: "/me/submissions?limit=\(limit)&offset=\(offset)", method: "GET")
+            return (try? JSONDecoder().decode([SubmissionDetail].self, from: data)) ?? []
+        }
+    }
+
     // MARK: - Helpers
 
     private func apply(tokens: AuthTokens) {

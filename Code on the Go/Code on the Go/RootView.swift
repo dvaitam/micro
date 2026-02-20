@@ -16,6 +16,10 @@ struct RootView: View {
                 .tabItem {
                     Label("Favorites", systemImage: "star.fill")
                 }
+            MySubmissionsTab()
+                .tabItem {
+                    Label("My Submissions", systemImage: "paperplane")
+                }
         }
         .task {
             problemsViewModel.attach(client: apiClient)
@@ -287,6 +291,148 @@ struct FavoritesTab: View {
     }
 }
 
+
+// MARK: - My Submissions Tab
+
+struct MySubmissionsTab: View {
+    @EnvironmentObject private var apiClient: CodeforcesAPIClient
+    @State private var submissions: [SubmissionDetail] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var page = 0
+    @State private var expandedId: Int?
+    private let pageSize = 20
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if apiClient.accessToken == nil {
+                    ContentUnavailableView("Sign in to see your submissions", systemImage: "person.crop.circle")
+                } else if isLoading && submissions.isEmpty {
+                    VStack { Spacer(); ProgressView(); Spacer() }
+                } else if submissions.isEmpty {
+                    ContentUnavailableView("No submissions yet", systemImage: "tray")
+                } else {
+                    List {
+                        ForEach(submissions) { sub in
+                            SubmissionRow(submission: sub, isExpanded: expandedId == sub.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation {
+                                        expandedId = expandedId == sub.id ? nil : sub.id
+                                    }
+                                }
+                        }
+                        HStack {
+                            Button("Prev") {
+                                guard page > 0 else { return }
+                                page -= 1
+                                Task { await loadSubmissions() }
+                            }
+                            .disabled(page == 0 || isLoading)
+                            Spacer()
+                            Text("Page \(page + 1)")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Next") {
+                                page += 1
+                                Task { await loadSubmissions() }
+                            }
+                            .disabled(submissions.count < pageSize || isLoading)
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.footnote)
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("My Submissions")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: { Task { await loadSubmissions() } }) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
+            .task { await loadSubmissions() }
+        }
+    }
+
+    private func loadSubmissions() async {
+        guard apiClient.accessToken != nil else { return }
+        isLoading = true
+        errorMessage = nil
+        do {
+            submissions = try await apiClient.fetchUserSubmissions(limit: pageSize, offset: page * pageSize)
+        } catch {
+            errorMessage = error.localizedDescription
+            submissions = []
+        }
+        isLoading = false
+    }
+}
+
+struct SubmissionRow: View {
+    let submission: SubmissionDetail
+    let isExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                verdictDot
+                Text("#\(submission.id)")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                if let contest = submission.contestId, let idx = submission.index {
+                    Text("\(contest)\(idx)")
+                        .font(.caption)
+                        .foregroundColor(.accentColor)
+                }
+                if let lang = submission.lang, !lang.isEmpty {
+                    Text(lang)
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(UIColor.tertiarySystemBackground))
+                        .clipShape(Capsule())
+                }
+                Spacer()
+                Text(submission.status)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            if let verdict = submission.verdict, !verdict.isEmpty {
+                Text(verdict)
+                    .font(.caption)
+                    .foregroundColor(verdict.lowercased().contains("accepted") ? .green : .red)
+            }
+            if let ts = submission.timestamp {
+                Text(ts)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            if isExpanded {
+                SubmissionExpandedDetail(detail: submission)
+            }
+        }
+    }
+
+    private var verdictDot: some View {
+        let color: Color = {
+            if let v = submission.verdict?.lowercased() {
+                if v.contains("accepted") { return .green }
+                if v.contains("wrong") || v.contains("error") || v.contains("limit") { return .red }
+            }
+            let s = submission.status.lowercased()
+            if s == "completed" || s == "done" { return .orange }
+            if s == "queued" || s == "pending" || s == "running" { return .blue }
+            return .gray
+        }()
+        return Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
+    }
+}
 
 struct ProblemRow: View {
     let problem: Problem
