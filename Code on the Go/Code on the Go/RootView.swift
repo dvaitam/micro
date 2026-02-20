@@ -4,6 +4,35 @@ import WebKit
 struct RootView: View {
     @EnvironmentObject private var apiClient: CodeforcesAPIClient
     @EnvironmentObject private var problemsViewModel: ProblemsViewModel
+    @EnvironmentObject private var favoritesViewModel: FavoritesViewModel
+
+    var body: some View {
+        TabView {
+            ProblemsTab()
+                .tabItem {
+                    Label("Problems", systemImage: "list.bullet")
+                }
+            FavoritesTab()
+                .tabItem {
+                    Label("Favorites", systemImage: "star.fill")
+                }
+        }
+        .task {
+            problemsViewModel.attach(client: apiClient)
+            favoritesViewModel.attach(client: apiClient)
+            await problemsViewModel.loadTagsIfNeeded()
+            await problemsViewModel.loadProblems(resetPage: true)
+            await favoritesViewModel.loadFavorites()
+        }
+    }
+}
+
+// MARK: - Problems Tab
+
+struct ProblemsTab: View {
+    @EnvironmentObject private var apiClient: CodeforcesAPIClient
+    @EnvironmentObject private var problemsViewModel: ProblemsViewModel
+    @EnvironmentObject private var favoritesViewModel: FavoritesViewModel
     @State private var selectedProblem: Problem?
     @State private var showingLogin = false
     @State private var showingSubmit = false
@@ -27,12 +56,6 @@ struct RootView: View {
                 return
             }
             selectedProblem = newValue.first
-        }
-        .task {
-            problemsViewModel.attach(client: apiClient)
-            await problemsViewModel.loadTagsIfNeeded()
-            await problemsViewModel.loadProblems(resetPage: true)
-            selectedProblem = problemsViewModel.problems.first
         }
         .sheet(isPresented: $showingLogin) {
             NavigationStack {
@@ -112,7 +135,9 @@ struct RootView: View {
 
             Section {
                 ForEach(problemsViewModel.problems) { problem in
-                    ProblemRow(problem: problem, isSelected: selectedProblem?.id == problem.id)
+                    ProblemRow(problem: problem, isSelected: selectedProblem?.id == problem.id, isFavorite: favoritesViewModel.isFavorite(problem)) {
+                        Task { await favoritesViewModel.toggleFavorite(problem) }
+                    }
                         .tag(problem.id)
                         .listRowBackground(
                             RoundedRectangle(cornerRadius: 10)
@@ -167,10 +192,107 @@ struct RootView: View {
     }
 }
 
+// MARK: - Favorites Tab
+
+struct FavoritesTab: View {
+    @EnvironmentObject private var apiClient: CodeforcesAPIClient
+    @EnvironmentObject private var favoritesViewModel: FavoritesViewModel
+    @State private var selectedProblem: Problem?
+    @State private var showingSubmit = false
+    @StateObject private var submitVM = SubmitViewModel()
+
+    var body: some View {
+        NavigationSplitView {
+            favoriteSidebar
+                .navigationTitle("Favorites")
+                .toolbar {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button(action: { showingSubmit = true }) {
+                            Label("Submit", systemImage: "paperplane.fill")
+                        }
+                        .disabled(selectedProblem == nil)
+                        Button(action: { Task { await favoritesViewModel.loadFavorites() } }) {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                    }
+                }
+        } detail: {
+            if let problem = selectedProblem {
+                ProblemDetailView(problem: problem)
+                    .id(problem.id)
+            } else {
+                ContentUnavailableView("Select a favorite", systemImage: "star")
+            }
+        }
+        .fullScreenCover(isPresented: $showingSubmit) {
+            NavigationStack {
+                SubmitPage(problem: selectedProblem, submitVM: submitVM)
+            }
+        }
+    }
+
+    private var favoriteSidebar: some View {
+        List(selection: Binding<String?>(
+            get: { selectedProblem?.id },
+            set: { id in
+                selectedProblem = id.flatMap { id in favoritesViewModel.favorites.first { $0.id == id } }
+            }
+        )) {
+            if apiClient.accessToken == nil {
+                Section {
+                    ContentUnavailableView("Sign in to see favorites", systemImage: "person.crop.circle")
+                }
+                .listRowSeparator(.hidden)
+            } else if favoritesViewModel.isLoading {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                }
+                .listRowSeparator(.hidden)
+            } else if favoritesViewModel.favorites.isEmpty {
+                Section {
+                    ContentUnavailableView("No favorites yet", systemImage: "star")
+                }
+                .listRowSeparator(.hidden)
+            } else {
+                Section {
+                    ForEach(favoritesViewModel.favorites) { problem in
+                        ProblemRow(problem: problem, isSelected: selectedProblem?.id == problem.id, isFavorite: true) {
+                            Task { await favoritesViewModel.toggleFavorite(problem) }
+                        }
+                            .tag(problem.id)
+                            .listRowBackground(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(selectedProblem?.id == problem.id ? Color.accentColor.opacity(0.12) : Color(UIColor.secondarySystemBackground))
+                                    .padding(.vertical, 2)
+                            )
+                    }
+                }
+                .listRowSeparator(.hidden)
+            }
+
+            if let error = favoritesViewModel.errorMessage {
+                Section {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.footnote)
+                }
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.plain)
+    }
+}
+
 
 struct ProblemRow: View {
     let problem: Problem
     let isSelected: Bool
+    var isFavorite: Bool = false
+    var onToggleFavorite: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -195,6 +317,13 @@ struct ProblemRow: View {
                 }
             }
             Spacer()
+            if let onToggleFavorite {
+                Button(action: onToggleFavorite) {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .foregroundColor(isFavorite ? .yellow : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.accentColor)

@@ -11,12 +11,14 @@ import SwiftUI
 struct Code_on_the_GoApp: App {
     @StateObject private var apiClient = CodeforcesAPIClient()
     @StateObject private var problemsViewModel = ProblemsViewModel()
+    @StateObject private var favoritesViewModel = FavoritesViewModel()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(apiClient)
                 .environmentObject(problemsViewModel)
+                .environmentObject(favoritesViewModel)
         }
     }
 }

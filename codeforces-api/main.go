@@ -205,6 +205,7 @@ func main() {
 	mux.HandleFunc("/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("/model", s.handleModel)
 	mux.HandleFunc("/me/submissions", s.handleUserSubmissions)
+	mux.HandleFunc("/me/favorites", s.handleFavorites)
 	mux.HandleFunc("/search", s.handleSearch)
 	mux.HandleFunc("/tags", s.handleTags)
 	mux.HandleFunc("/auth/request-otp", s.handleRequestOTP)
@@ -572,6 +573,104 @@ func (s *server) handleUserSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, list)
 }
+func (s *server) handleFavorites(w http.ResponseWriter, r *http.Request) {
+	userID, err := s.authenticate(r)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := s.db.Query(`
+			SELECT p.id, p.contest_id, p.index_name, COALESCE(p.title,''),
+			       COALESCE(p.rating,0),
+			       COALESCE(ARRAY(SELECT x FROM unnest(p.tags) AS x), ARRAY[]::text[])
+			FROM favorites f
+			JOIN problems p ON p.id = f.problem_id
+			WHERE f.user_id = $1
+			ORDER BY f.created_at DESC
+		`, userID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		type favProblem struct {
+			ID        int64    `json:"id"`
+			ContestID string   `json:"contest_id"`
+			Index     string   `json:"index"`
+			Title     string   `json:"title"`
+			Rating    int      `json:"rating,omitempty"`
+			Tags      []string `json:"tags,omitempty"`
+		}
+		var list []favProblem
+		for rows.Next() {
+			var p favProblem
+			if err := rows.Scan(&p.ID, &p.ContestID, &p.Index, &p.Title, &p.Rating, pq.Array(&p.Tags)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			list = append(list, p)
+		}
+		if list == nil {
+			list = []favProblem{}
+		}
+		writeJSON(w, http.StatusOK, list)
+
+	case http.MethodPost:
+		var payload struct {
+			ContestID string `json:"contest_id"`
+			Index     string `json:"index"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		payload.ContestID = strings.TrimSpace(payload.ContestID)
+		payload.Index = strings.TrimSpace(payload.Index)
+		if payload.ContestID == "" || payload.Index == "" {
+			http.Error(w, "contest_id and index required", http.StatusBadRequest)
+			return
+		}
+		var problemID int64
+		err := s.db.QueryRow(`SELECT id FROM problems WHERE contest_id = $1 AND index_name = $2`, payload.ContestID, payload.Index).Scan(&problemID)
+		if err != nil {
+			http.Error(w, "problem not found", http.StatusNotFound)
+			return
+		}
+		_, err = s.db.Exec(`INSERT INTO favorites (user_id, problem_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, problemID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
+
+	case http.MethodDelete:
+		contestID := strings.TrimSpace(r.URL.Query().Get("contest_id"))
+		index := strings.TrimSpace(r.URL.Query().Get("index"))
+		if contestID == "" || index == "" {
+			http.Error(w, "contest_id and index query params required", http.StatusBadRequest)
+			return
+		}
+		var problemID int64
+		err := s.db.QueryRow(`SELECT id FROM problems WHERE contest_id = $1 AND index_name = $2`, contestID, index).Scan(&problemID)
+		if err != nil {
+			http.Error(w, "problem not found", http.StatusNotFound)
+			return
+		}
+		_, err = s.db.Exec(`DELETE FROM favorites WHERE user_id = $1 AND problem_id = $2`, userID, problemID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *server) publishSubmission(msg statusMessage) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
@@ -1281,6 +1380,12 @@ func ensureSchemas(ctx context.Context, db *sql.DB) error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_submissions_user ON submissions(user_id)`,
+		`CREATE TABLE IF NOT EXISTS favorites (
+			user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			problem_id INT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, problem_id)
+		)`,
 	}
 	for _, stmt := range ddl {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -1509,7 +1614,7 @@ func ensureKafkaTopicsWithRetry(ctx context.Context, brokers []string, topics ma
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

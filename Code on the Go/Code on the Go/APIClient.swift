@@ -129,6 +129,44 @@ final class CodeforcesAPIClient: ObservableObject {
         }
     }
 
+    func fetchFavorites() async throws -> [Problem] {
+        try await ensureAuthorized()
+        do {
+            let data = try await authorizedRequest(path: "/me/favorites", method: "GET")
+            let dtos = try JSONDecoder().decode([ProblemDTO].self, from: data)
+            return dtos.map { $0.toProblem() }
+        } catch APIError.unauthorized {
+            guard await refreshSession() else { throw APIError.unauthorized }
+            let data = try await authorizedRequest(path: "/me/favorites", method: "GET")
+            let dtos = try JSONDecoder().decode([ProblemDTO].self, from: data)
+            return dtos.map { $0.toProblem() }
+        }
+    }
+
+    func addFavorite(contestId: String, index: String) async throws {
+        try await ensureAuthorized()
+        let payload: [String: AnyEncodable] = [
+            "contest_id": AnyEncodable(contestId),
+            "index": AnyEncodable(index)
+        ]
+        do {
+            _ = try await authorizedRequest(path: "/me/favorites", method: "POST", body: payload)
+        } catch APIError.unauthorized {
+            guard await refreshSession() else { throw APIError.unauthorized }
+            _ = try await authorizedRequest(path: "/me/favorites", method: "POST", body: payload)
+        }
+    }
+
+    func removeFavorite(contestId: String, index: String) async throws {
+        try await ensureAuthorized()
+        do {
+            _ = try await authorizedRequest(path: "/me/favorites?contest_id=\(contestId)&index=\(index)", method: "DELETE")
+        } catch APIError.unauthorized {
+            guard await refreshSession() else { throw APIError.unauthorized }
+            _ = try await authorizedRequest(path: "/me/favorites?contest_id=\(contestId)&index=\(index)", method: "DELETE")
+        }
+    }
+
     func fetchSubmission(id: Int) async throws -> SubmissionDetail {
         let data = try await send(path: "/submissions?id=\(id)", method: "GET")
         return try JSONDecoder().decode(SubmissionDetail.self, from: data)
