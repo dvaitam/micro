@@ -94,6 +94,7 @@ export default function RunPage({ params }) {
                   <th>Model</th>
                   <th>Lang</th>
                   <th>Problem</th>
+                  <th>Rating</th>
                   <th>Success</th>
                   <th>Timestamp</th>
                   <th>Actions</th>
@@ -111,6 +112,7 @@ export default function RunPage({ params }) {
                         {e.index}
                       </Link>
                     </td>
+                    <td>{e.rating && e.rating > 0 ? e.rating : '—'}</td>
                     <td>{e.success ? 'yes' : 'no'}</td>
                     <td className="muted">{e.timestamp}</td>
                     <td className="row gap-8">
@@ -122,7 +124,7 @@ export default function RunPage({ params }) {
                 ))}
                 {evals.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={7} className="muted">
+                    <td colSpan={8} className="muted">
                       No evaluations found for this run.
                     </td>
                   </tr>
