@@ -102,7 +102,7 @@ export default function RunPage({ params }) {
               <tbody>
                 {evals.map((e) => (
                   <tr key={e.id}>
-                    <td>#{e.id}</td>
+                    <td><Link href={`/evaluation/${e.id}/fix`}>#{e.id}</Link></td>
                     <td><ModelLogo model={e.model} /><Link href={`/model?name=${encodeURIComponent(e.model)}`}>{e.model}</Link></td>
                     <td>{e.lang}</td>
                     <td>
@@ -114,7 +114,6 @@ export default function RunPage({ params }) {
                     <td>{e.success ? 'yes' : 'no'}</td>
                     <td className="muted">{e.timestamp}</td>
                     <td className="row gap-8">
-                      <Link href={`/evaluation/${e.id}/fix`}>Fix prompt</Link>
                       <button onClick={() => copyCleaned(e.response, e.id)}>
                         {copiedId === e.id ? 'Copied' : 'Cleaned up response'}
                       </button>
