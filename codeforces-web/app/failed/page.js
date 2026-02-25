@@ -17,10 +17,7 @@ function extractCodeBlock(text) {
 function stripComments(code) {
   if (!code) return '';
   let cleaned = code.replace(/\/\*[\s\S]*?\*\//g, '');
-  cleaned = cleaned.replace(/(^|\s)#.*$/gm, '$1');
   cleaned = cleaned.replace(/\/\/.*$/gm, '');
-  //  Only strip SQL-style comments that start a line; keep decrement operators intact.
-  cleaned = cleaned.replace(/^[ \t]*--.*$/gm, '');
   return cleaned.trim();
 }
 

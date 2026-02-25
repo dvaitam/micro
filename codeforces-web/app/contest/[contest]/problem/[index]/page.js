@@ -17,9 +17,7 @@ function extractCodeBlock(text) {
 function stripComments(code) {
   if (!code) return '';
   let cleaned = code.replace(/\/\*[\s\S]*?\*\//g, '');
-  cleaned = cleaned.replace(/(^|\s)#.*$/gm, '$1');
   cleaned = cleaned.replace(/\/\/.*$/gm, '');
-  cleaned = cleaned.replace(/--.*$/gm, '');
   return cleaned.trim();
 }
 
