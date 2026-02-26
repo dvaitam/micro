@@ -454,20 +454,14 @@ func buildCandidate(ctx context.Context, lang, srcPath, tmpDir string) (string, 
 		}
 		return wrapper, nil
 	case "py", "python", "python3":
-		// Make script executable with shebang.
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
+		// Wrap in shell script so the verifier can exec it without relying
+		// on shebang / filesystem execute permission on the .py file.
+		wrapper := filepath.Join(tmpDir, "candidate_python.sh")
+		script := "#!/bin/sh\nexec python3 '" + srcPath + "' \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 			return "", err
 		}
-		if !bytes.HasPrefix(data, []byte("#!")) {
-			data = append([]byte("#!/usr/bin/env python3\n"), data...)
-			if err := os.WriteFile(srcPath, data, 0o755); err != nil {
-				return "", err
-			}
-		} else {
-			_ = os.Chmod(srcPath, 0o755)
-		}
-		return srcPath, nil
+		return wrapper, nil
 	default:
 		return "", errors.New("unsupported lang: " + lang)
 	}
