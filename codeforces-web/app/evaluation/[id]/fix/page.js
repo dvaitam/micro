@@ -48,7 +48,7 @@ export default function EvaluationFixPage({ params }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -69,13 +69,13 @@ export default function EvaluationFixPage({ params }) {
     load();
   }, [evalId]);
 
-  const copy = async (text) => {
+  const copy = async (text, key) => {
     try {
       await navigator.clipboard.writeText(text || '');
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 1500);
     } catch {
-      setCopied(false);
+      setCopiedKey(null);
     }
   };
 
@@ -122,8 +122,8 @@ export default function EvaluationFixPage({ params }) {
           <div className="card">
             <div className="card-header">
               <h2>Fix prompt</h2>
-              <button onClick={() => copy(fixPrompt)} className={copied ? 'copied' : ''}>
-                {copied ? 'Copied' : 'Copy'}
+              <button onClick={() => copy(fixPrompt, 'fix')} className={copiedKey === 'fix' ? 'copied' : ''}>
+                {copiedKey === 'fix' ? 'Copied' : 'Copy'}
               </button>
             </div>
             <pre className="code-block" style={{ whiteSpace: 'pre-wrap' }}>
@@ -149,16 +149,16 @@ export default function EvaluationFixPage({ params }) {
             <div className="muted">{data.timestamp}</div>
             <div className="row gap-8" style={{ marginTop: 8 }}>
               <button onClick={loadIntoEditor}>Load &amp; retry</button>
-              <button onClick={() => copy(data.response)}>Copy response</button>
-              <button onClick={() => copy(data.stdout)}>Copy stdout</button>
-              <button onClick={() => copy(data.stderr)}>Copy stderr</button>
+              <button onClick={() => copy(data.response, 'response')}>{copiedKey === 'response' ? 'Copied' : 'Copy response'}</button>
+              <button onClick={() => copy(data.stdout, 'stdout')}>{copiedKey === 'stdout' ? 'Copied' : 'Copy stdout'}</button>
+              <button onClick={() => copy(data.stderr, 'stderr')}>{copiedKey === 'stderr' ? 'Copied' : 'Copy stderr'}</button>
             </div>
           </div>
 
           <div className="card">
             <div className="card-header">
               <h2>Response</h2>
-              <button onClick={() => copy(data.response)}>Copy</button>
+              <button onClick={() => copy(data.response, 'response')} className={copiedKey === 'response' ? 'copied' : ''}>{copiedKey === 'response' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.response || '(empty)'}</pre>
           </div>
@@ -166,7 +166,7 @@ export default function EvaluationFixPage({ params }) {
           <div className="card">
             <div className="card-header">
               <h2>Stdout</h2>
-              <button onClick={() => copy(data.stdout)}>Copy</button>
+              <button onClick={() => copy(data.stdout, 'stdout')} className={copiedKey === 'stdout' ? 'copied' : ''}>{copiedKey === 'stdout' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.stdout || '(empty)'}</pre>
           </div>
@@ -174,7 +174,7 @@ export default function EvaluationFixPage({ params }) {
           <div className="card">
             <div className="card-header">
               <h2>Stderr</h2>
-              <button onClick={() => copy(data.stderr)}>Copy</button>
+              <button onClick={() => copy(data.stderr, 'stderr')} className={copiedKey === 'stderr' ? 'copied' : ''}>{copiedKey === 'stderr' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.stderr || '(empty)'}</pre>
           </div>

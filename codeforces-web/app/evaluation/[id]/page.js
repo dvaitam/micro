@@ -11,6 +11,7 @@ export default function EvaluationFixPage({ params }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [copiedKey, setCopiedKey] = useState(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -31,12 +32,13 @@ export default function EvaluationFixPage({ params }) {
     load();
   }, [evalId]);
 
-  const copy = async (text) => {
+  const copy = async (text, key) => {
     try {
       await navigator.clipboard.writeText(text || '');
-      alert('Copied');
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 1500);
     } catch {
-      alert('Copy failed');
+      setCopiedKey(null);
     }
   };
 
@@ -91,14 +93,14 @@ export default function EvaluationFixPage({ params }) {
             <div className="muted">{data.timestamp}</div>
             <div className="row gap-8" style={{ marginTop: 8 }}>
               <button onClick={loadIntoEditor}>Load &amp; retry</button>
-              <button onClick={() => copy(data.response)}>Copy response</button>
+              <button onClick={() => copy(data.response, 'response')}>{copiedKey === 'response' ? 'Copied' : 'Copy response'}</button>
             </div>
           </div>
 
           <div className="card">
             <div className="card-header">
               <h2>Response</h2>
-              <button onClick={() => copy(data.response)}>Copy</button>
+              <button onClick={() => copy(data.response, 'response')} className={copiedKey === 'response' ? 'copied' : ''}>{copiedKey === 'response' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.response || '(empty)'}</pre>
           </div>
@@ -106,7 +108,7 @@ export default function EvaluationFixPage({ params }) {
           <div className="card">
             <div className="card-header">
               <h2>Stdout</h2>
-              <button onClick={() => copy(data.stdout)}>Copy</button>
+              <button onClick={() => copy(data.stdout, 'stdout')} className={copiedKey === 'stdout' ? 'copied' : ''}>{copiedKey === 'stdout' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.stdout || '(empty)'}</pre>
           </div>
@@ -114,7 +116,7 @@ export default function EvaluationFixPage({ params }) {
           <div className="card">
             <div className="card-header">
               <h2>Stderr</h2>
-              <button onClick={() => copy(data.stderr)}>Copy</button>
+              <button onClick={() => copy(data.stderr, 'stderr')} className={copiedKey === 'stderr' ? 'copied' : ''}>{copiedKey === 'stderr' ? 'Copied' : 'Copy'}</button>
             </div>
             <pre className="code-block">{data.stderr || '(empty)'}</pre>
           </div>
