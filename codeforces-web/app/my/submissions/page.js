@@ -13,6 +13,8 @@ export default function MySubmissionsPage() {
   const [hasMore, setHasMore] = useState(false);
   const socketRef = useRef(null);
 
+  useEffect(() => { document.title = 'My Submissions | CF Web'; }, []);
+
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('cf_token') : '';
     if (saved) setToken(saved);

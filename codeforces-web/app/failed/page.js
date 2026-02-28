@@ -46,6 +46,10 @@ function FailedContent({ params }) {
   const [model, setModel] = useState(modelFromPath);
 
   useEffect(() => {
+    document.title = modelFromPath ? `Failed - ${modelFromPath} | CF Web` : 'Failed | CF Web';
+  }, [modelFromPath]);
+
+  useEffect(() => {
     const fromQuery = searchParams?.get('unreviewed') === '1';
     if (searchParams?.has('unreviewed')) {
       setOnlyUnreviewed(fromQuery);

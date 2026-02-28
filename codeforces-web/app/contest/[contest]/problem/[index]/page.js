@@ -54,6 +54,11 @@ export default function ProblemPage({ params }) {
   const router = useRouter();
 
   useEffect(() => {
+    const title = problem?.title ? `${contest}${index} - ${problem.title}` : `${contest}${index}`;
+    document.title = `${title} | CF Web`;
+  }, [contest, index, problem?.title]);
+
+  useEffect(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('cf_token') : '';
     const savedEmail = typeof window !== 'undefined' ? localStorage.getItem('cf_email') : '';
     if (saved) {

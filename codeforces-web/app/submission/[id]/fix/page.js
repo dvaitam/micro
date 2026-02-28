@@ -30,6 +30,8 @@ export default function SubmissionFixPage({ params }) {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
+  useEffect(() => { document.title = `Submission #${subId} Fix | CF Web`; }, [subId]);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);

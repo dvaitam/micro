@@ -32,6 +32,8 @@ export default function RunPage({ params }) {
   const [error, setError] = useState('');
   const [copiedId, setCopiedId] = useState(null);
 
+  useEffect(() => { document.title = `Run ${runId} | CF Web`; }, [runId]);
+
   useEffect(() => {
     loadRun();
   }, [runId]);

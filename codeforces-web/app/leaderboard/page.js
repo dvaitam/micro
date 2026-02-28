@@ -11,6 +11,8 @@ export default function LeaderboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => { document.title = 'Leaderboard | CF Web'; }, []);
+
   useEffect(() => {
     loadLeaders();
   }, []);

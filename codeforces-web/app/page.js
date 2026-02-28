@@ -19,6 +19,8 @@ function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  useEffect(() => { document.title = 'Problems | CF Web'; }, []);
+
   // Initialize state from URL search params 
   const [problems, setProblems] = useState([]);
   const [selected, setSelected] = useState(null);

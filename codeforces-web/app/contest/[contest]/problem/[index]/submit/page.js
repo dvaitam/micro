@@ -28,6 +28,8 @@ export default function SubmitPage({ params }) {
   const [userEmail, setUserEmail] = useState('');
   const [authMsg, setAuthMsg] = useState(null);
   const router = useRouter();
+
+  useEffect(() => { document.title = `Submit ${contest}${index} | CF Web`; }, [contest, index]);
   const editorExtensions = useMemo(() => {
     switch (lang) {
       case 'go':

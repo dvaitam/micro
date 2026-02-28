@@ -14,6 +14,8 @@ export default function EvaluationFixPage({ params }) {
   const [copiedKey, setCopiedKey] = useState(null);
   const router = useRouter();
 
+  useEffect(() => { document.title = `Evaluation #${evalId} | CF Web`; }, [evalId]);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);

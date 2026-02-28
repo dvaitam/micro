@@ -14,6 +14,8 @@ function ModelView() {
   const [evals, setEvals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => { document.title = name ? `${name} | CF Web` : 'Model | CF Web'; }, [name]);
+
   useEffect(() => {
     if (name) loadModel(name);
   }, [name]);

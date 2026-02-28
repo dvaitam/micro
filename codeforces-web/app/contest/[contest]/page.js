@@ -11,6 +11,8 @@ export default function ContestListing({ params }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  useEffect(() => { document.title = `Contest ${contest} | CF Web`; }, [contest]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {

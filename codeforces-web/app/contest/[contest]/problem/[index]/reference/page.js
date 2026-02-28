@@ -15,6 +15,8 @@ export default function ReferenceSolutionPage({ params }) {
   const [copyState, setCopyState] = useState('idle');
   const router = useRouter();
 
+  useEffect(() => { document.title = `Reference ${contest}${index} | CF Web`; }, [contest, index]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {

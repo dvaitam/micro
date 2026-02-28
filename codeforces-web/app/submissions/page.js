@@ -10,6 +10,8 @@ export default function SubmissionsPage() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
+  useEffect(() => { document.title = 'Recent Submissions | CF Web'; }, []);
+
   useEffect(() => {
     fetchSubs(page);
   }, [page]);
