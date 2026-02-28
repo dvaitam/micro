@@ -111,6 +111,10 @@ export default function RunPage({ params }) {
                         {e.contest_id}
                         {e.index}
                       </Link>
+                      {' '}
+                      <a href={`https://codeforces.com/contest/${e.contest_id}/submit/${e.index}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.85em' }}>
+                        submit
+                      </a>
                     </td>
                     <td>{e.rating && e.rating > 0 ? e.rating : '—'}</td>
                     <td>{e.success ? 'yes' : 'no'}</td>
