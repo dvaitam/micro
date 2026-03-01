@@ -7,6 +7,27 @@ import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
+function timeAgo(timestamp) {
+  if (!timestamp) return '—';
+  const now = Date.now();
+  const then = new Date(timestamp).getTime();
+  if (isNaN(then)) return timestamp;
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(days / 365);
+  return `${years}y ago`;
+}
+
 function isReviewed(entry) {
   return Number(entry?.reviewied || 0) > 0;
 }
@@ -155,9 +176,10 @@ function FailedContent({ params }) {
                   <th>ID</th>
               <th>Model</th>
               <th>Problem</th>
+              <th>Rating</th>
               <th>Run</th>
               <th>Reviewed?</th>
-              <th>Timestamp</th>
+              <th>Time</th>
             </tr>
           </thead>
           <tbody>
@@ -178,14 +200,15 @@ function FailedContent({ params }) {
                     (CF)
                   </a>
                 </td>
+                <td>{r.rating && r.rating > 0 ? r.rating : '—'}</td>
                 <td className="muted">{r.run_id || '—'}</td>
                 <td>{isReviewed(r) ? 'Yes' : 'No'}</td>
-                <td className="muted">{r.timestamp}</td>
+                <td className="muted" title={r.timestamp}>{timeAgo(r.timestamp)}</td>
               </tr>
             ))}
             {rows.length === 0 && !loading && (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   Nothing to show.
                 </td>
               </tr>
