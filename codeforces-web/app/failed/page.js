@@ -7,25 +7,6 @@ import ModelLogo from '../components/ModelLogo';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || 'https://codeforces-api.manchik.co.uk';
 
-function extractCodeBlock(text) {
-  if (!text) return '';
-  const match = text.match(/```(?:[\w.+-]*\n)?([\s\S]*?)```/m);
-  if (match) return match[1].trim();
-  return text.trim();
-}
-
-function stripComments(code) {
-  if (!code) return '';
-  let cleaned = code.replace(/\/\*[\s\S]*?\*\//g, '');
-  cleaned = cleaned.replace(/\/\/.*$/gm, '');
-  return cleaned.trim();
-}
-
-function cleanedResponse(response) {
-  const code = extractCodeBlock(response || '');
-  return stripComments(code);
-}
-
 function isReviewed(entry) {
   return Number(entry?.reviewied || 0) > 0;
 }
@@ -42,7 +23,6 @@ function FailedContent({ params }) {
   const [page, setPage] = useState(0);
   const [onlyUnreviewed, setOnlyUnreviewed] = useState(true);
   const [hasMore, setHasMore] = useState(false);
-  const [copiedId, setCopiedId] = useState(null);
   const [model, setModel] = useState(modelFromPath);
 
   useEffect(() => {
@@ -178,23 +158,18 @@ function FailedContent({ params }) {
               <th>Run</th>
               <th>Reviewed?</th>
               <th>Timestamp</th>
-              <th>Cleaned response</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                <td>#{r.id}</td>
+                <td><Link href={`/evaluation/${r.id}/fix`}>#{r.id}</Link></td>
                 <td>{r.model ? <><ModelLogo model={r.model} /><Link href={`/model?name=${encodeURIComponent(r.model)}`}>{r.model}</Link></> : '—'}</td>
                 <td>
-                  <Link href={`/contest/${r.contest_id}/problem/${r.index}`}>
-                    {r.contest_id}
-                    {r.index}
-                  </Link>
+                  {r.contest_id}{r.index}
                   {' '}
                   <a
-                    href={`https://codeforces.com/problemset/problem/${r.contest_id}/${r.index}`}
+                    href={`https://codeforces.com/problemset/submit/${r.contest_id}/${r.index}`}
                     target="_blank"
                     rel="noreferrer"
                     className="muted"
@@ -206,44 +181,11 @@ function FailedContent({ params }) {
                 <td className="muted">{r.run_id || '—'}</td>
                 <td>{isReviewed(r) ? 'Yes' : 'No'}</td>
                 <td className="muted">{r.timestamp}</td>
-                <td>
-                  <a
-                    href={`https://codeforces.com/problemset/problem/${r.contest_id}/${r.index}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Problem
-                  </a>
-                </td>
-                <td>
-                  <div className="row gap-8" style={{ alignItems: 'center' }}>
-                    <div className="muted" style={{ maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {cleanedResponse(r.response) || '—'}
-                    </div>
-                    <button
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(cleanedResponse(r.response));
-                          setCopiedId(r.id);
-                          setTimeout(() => setCopiedId(null), 1200);
-                        } catch (e) {
-                          console.error('copy failed', e);
-                        }
-                      }}
-                    >
-                      {copiedId === r.id ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                </td>
-                <td className="row gap-8">
-                  <Link href={`/evaluation/${r.id}`}>View</Link>
-                  <Link href={`/evaluation/${r.id}/fix`}>Fix prompt</Link>
-                </td>
               </tr>
             ))}
             {rows.length === 0 && !loading && (
               <tr>
-                <td colSpan={8} className="muted">
+                <td colSpan={6} className="muted">
                   Nothing to show.
                 </td>
               </tr>
