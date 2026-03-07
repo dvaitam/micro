@@ -51,13 +51,6 @@ export default function MySubmissionsPage() {
           <h1>My Submissions</h1>
           <p>Live progress per test.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/">Home</Link>
-          <button onClick={() => fetchSubs(page)}>Refresh</button>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          <Link href="/failed">Failed</Link>
-        </div>
       </header>
 
       {!token && <div className="notice error">Login on the home page to view your submissions.</div>}

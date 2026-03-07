@@ -1,4 +1,6 @@
 import "./globals.css";
+import Nav from "./components/Nav";
+import Footer from "./components/Footer";
 
 export const metadata = {
   title: {
@@ -14,7 +16,11 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <Nav />
+        <main className="site-main">{children}</main>
+        <Footer />
+      </body>
     </html>
   );
 }

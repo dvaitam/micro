@@ -100,12 +100,6 @@ export default function ReferenceSolutionPage({ params }) {
             </div>
           )}
         </div>
-        <div className="nav-links">
-          <Link href="/">Problems</Link>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-        </div>
       </header>
 
       <section className="card">

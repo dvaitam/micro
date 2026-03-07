@@ -72,12 +72,6 @@ export default function RunPage({ params }) {
           <h1>Run: {runId}</h1>
           <p className="muted">Evaluations for this run.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/">Problems</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-        </div>
       </header>
 
       {error && <div className="notice error">{error}</div>}

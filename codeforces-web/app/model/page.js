@@ -45,16 +45,6 @@ function ModelView() {
           <h1><ModelLogo model={name} />{title}</h1>
           <p className="muted">Recent evaluations for the selected model.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/">Problems</Link>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          <Link href="/failed">Failed</Link>
-          <a href="https://codeforces.com/" target="_blank" rel="noreferrer">
-            Codeforces
-          </a>
-        </div>
       </header>
 
       {!name && <div className="notice">Provide a model name in the query (?name=)</div>}

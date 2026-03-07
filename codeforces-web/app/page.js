@@ -113,14 +113,6 @@ function HomeContent() {
           <h1>Codeforces Web</h1>
           <p>Browse problems, open a statement to submit.</p>
         </div>
-        <div className="pill">API: {apiBase}</div>
-        <div className="nav-links">
-          <Link href="/">Home</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/failed">Failed</Link>
-        </div>
       </header>
 
       <section className="grid">

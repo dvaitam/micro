@@ -40,11 +40,6 @@ export default function LeaderboardPage() {
           <h1>Leaderboard</h1>
           <p className="muted">Model runs ranked by rating.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/">Problems</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-        </div>
       </header>
 
       {error && <div className="notice error">{error}</div>}

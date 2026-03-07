@@ -356,18 +356,6 @@ export default function ProblemPage({ params }) {
             {problem?.title && <span className="header__title-name"> &mdash; {problem.title}</span>}
           </h1>
         </div>
-        <div className="nav-links">
-          <Link href="/">Problems</Link>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          {loggedIn && (
-            <>
-              <span className="muted">{userEmail || 'user'}</span>
-              <button onClick={handleLogout}>Logout</button>
-            </>
-          )}
-        </div>
       </header>
 
       <section className="problem-layout">

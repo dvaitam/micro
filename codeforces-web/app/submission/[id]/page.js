@@ -47,13 +47,6 @@ export default function SubmissionFixPage({ params }) {
           <h1>Submission #{subId}</h1>
           <p className="muted">Use code/output as a starting point to retry.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/">Problems</Link>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          <Link href="/failed">Failed</Link>
-        </div>
       </header>
 
       {loading && <div className="muted">Loading…</div>}

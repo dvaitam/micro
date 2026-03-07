@@ -38,13 +38,6 @@ export default function SubmissionsPage() {
           <h1>Recent Submissions</h1>
           <p>All submissions across users.</p>
         </div>
-        <div className="nav-links">
-          <Link href="/">Home</Link>
-          <button onClick={() => fetchSubs(page)}>Refresh</button>
-          <Link href="/submissions">Recent submissions</Link>
-          <Link href="/my/submissions">My submissions</Link>
-          <Link href="/failed">Failed</Link>
-        </div>
       </header>
 
       <section className="grid">
