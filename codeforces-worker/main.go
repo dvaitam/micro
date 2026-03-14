@@ -154,7 +154,11 @@ func handleSubmission(ctx context.Context, db *sql.DB, producer *kafka.Writer, i
 			Stderr:       "Time limit exceeded",
 		}
 	}
-	return publishStatus(ctx, producer, res)
+	// Use a fresh context for the final publish so it succeeds even if the
+	// verification context has expired (e.g. deadline exceeded).
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pubCancel()
+	return publishStatus(pubCtx, producer, res)
 }
 
 func publishStatus(ctx context.Context, producer *kafka.Writer, msg statusMessage) error {
